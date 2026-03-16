@@ -1,0 +1,207 @@
+---
+title: Standalone Server
+description: Run JReactive on Undertow without Spring Boot using JReactiveServer.
+---
+
+`jreactive-standalone` embeds an [Undertow](https://undertow.io/) HTTP server so you can run JReactive applications as plain executable JARs with no Spring dependency.
+
+## When to choose standalone vs Spring Boot
+
+<CardGroup cols={2}>
+  <Card title="Choose Standalone" icon="bolt">
+    - No Spring Boot in the project
+    - Microservice or CLI tool where full framework weight is undesirable
+    - Building a fat JAR distributed as a single binary
+    - Embedding JReactive inside an existing non-Spring application
+  </Card>
+  <Card title="Choose Spring Boot" icon="leaf">
+    - Already using Spring ecosystem (JPA, Security, Actuator, etc.)
+    - Need Spring `@Autowired` inside page components
+    - Want Spring profiles and `application.yml` configuration
+    - Deploying to a platform that expects a Spring Boot app
+  </Card>
+</CardGroup>
+
+## Maven dependencies
+
+```xml pom.xml
+<dependencies>
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-standalone</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- JVM rendering runtime -->
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-runtime-jvm</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- Client-side JS bundled on the classpath at static/js/ -->
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-runtime-js</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- Undertow HTTP server -->
+    <dependency>
+        <groupId>io.undertow</groupId>
+        <artifactId>undertow-core</artifactId>
+        <version>2.3.10.Final</version>
+    </dependency>
+
+    <!-- Bean Validation (optional but recommended) -->
+    <dependency>
+        <groupId>org.hibernate.validator</groupId>
+        <artifactId>hibernate-validator</artifactId>
+        <version>8.0.1.Final</version>
+    </dependency>
+</dependencies>
+```
+
+To package a runnable fat JAR, add `maven-shade-plugin`:
+
+```xml pom.xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-shade-plugin</artifactId>
+    <version>3.5.1</version>
+    <executions>
+        <execution>
+            <phase>package</phase>
+            <goals><goal>shade</goal></goals>
+            <configuration>
+                <transformers>
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                        <mainClass>com.example.Main</mainClass>
+                    </transformer>
+                    <!-- Required for Hibernate Validator SPI -->
+                    <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                </transformers>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+```
+
+## Starting the server
+
+`JReactiveServer` wires together all JReactive internals: a `CaffeineStateStore`, a `PageResolver`, a `JrxHubManager`, a `CallGuard`, and the Undertow `PathHandler`. You create an instance, register routes, then call `start()`.
+
+```java Main.java
+public class Main {
+
+    public static void main(String[] args) {
+
+        // Install the AST component engine before doing anything else
+        AstComponentEngine.installAsDefault();
+
+        JReactiveServer server = new JReactiveServer(8080);
+
+        // Register routes with plain lambda factories
+        server.addRoute("/", CounterPage::new);
+
+        server.start();
+    }
+}
+```
+
+`addRoute` accepts a `Supplier<HtmlComponent>` — a factory that produces a fresh page instance per session. Because there is no IoC container here, the factory is responsible for constructing the component and injecting any collaborators manually.
+
+## Writing a page component
+
+```java CounterPage.java
+public class CounterPage extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="font-family: system-ui, sans-serif; text-align: center; padding: 50px;">
+                <h1>JReactive Standalone</h1>
+                <p>Running on <strong>Undertow</strong> (no Spring Boot)</p>
+
+                <div style="border: 1px solid #ccc; padding: 20px; display: inline-block;">
+                    <h2>Counter: {{count}}</h2>
+                    <button @click="increment()" style="padding: 10px 18px; font-size: 1.1em;">
+                        Click me!
+                    </button>
+                </div>
+            </div>
+        """;
+    }
+}
+```
+
+## HTTP routes registered by JReactiveServer
+
+Internally, `JReactiveServer.start()` builds an Undertow `PathHandler` with the following prefix mappings:
+
+| Path prefix | Handler | Purpose |
+|---|---|---|
+| `/ws` | `WsEndpoint` | WebSocket endpoint for state push and event dispatch |
+| `/call` | `CallEndpoint` | HTTP POST endpoint for `@Call` method invocations |
+| `/js` | `ResourceHandler` (classpath `static/js`) | Serves the JReactive JavaScript runtime |
+| `/static` | `ResourceHandler` (classpath `static`) | Serves static assets |
+| `/**` (fallback) | `PageEndpoint` | Server-side renders the matched page component |
+
+```java JReactiveServer.java
+public void start() {
+    ResourceHandler jsHandler = new ResourceHandler(
+            new ClassPathResourceManager(cl, "static/js")
+    );
+
+    PathHandler routes = new PathHandler(fallback);
+    routes.addPrefixPath("/ws",     websocket(wsEndpoint::onConnect));
+    routes.addPrefixPath("/call",   callEndpoint);
+    routes.addPrefixPath("/js",     jsHandler);
+    routes.addPrefixPath("/static", staticHandler);
+
+    Undertow server = Undertow.builder()
+            .addHttpListener(port, "0.0.0.0")
+            .setHandler(routes)
+            .build();
+
+    server.start();
+}
+```
+
+## Static resources
+
+Both `/js` and `/static` are served from the classpath using Undertow's `ClassPathResourceManager`. Place your static files under `src/main/resources/static/` and they will be picked up automatically.
+
+The JReactive client-side JavaScript runtime is published as a classpath resource by the `jreactive-runtime-js` artifact, so it is available at `/js/jreactive-runtime.js` without any extra configuration.
+
+## Annotation processor
+
+Add `jreactive-apt` to `annotationProcessorPaths` just as you would for the Spring Boot integration:
+
+```xml pom.xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <version>3.11.0</version>
+    <configuration>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>com.ciro</groupId>
+                <artifactId>jreactive-apt</artifactId>
+                <version>0.0.1-SNAPSHOT</version>
+            </path>
+        </annotationProcessorPaths>
+        <compilerArgs>
+            <arg>-parameters</arg>
+        </compilerArgs>
+    </configuration>
+</plugin>
+```

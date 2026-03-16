@@ -1,0 +1,388 @@
+---
+title: Built-in UI Components
+description: Reference for the jreactive-ui component library, with @Bind fields and template markup for each component.
+---
+
+The `jreactive-ui` module provides a set of ready-to-use `HtmlComponent` subclasses for common UI patterns. Each component exposes its configurable properties via `@Bind` fields that you set from the parent template using attribute syntax.
+
+## Adding the dependency
+
+```xml pom.xml
+<dependency>
+    <groupId>com.ciro</groupId>
+    <artifactId>jreactive-ui</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+## Using components in templates
+
+Components are referenced by their class name as an XML tag. Static property values use plain attribute syntax; reactive bindings (bound to a parent `@State` field) use a colon prefix:
+
+```html
+<!-- Static value -->
+<JButton label="Save" type="primary" onClick="save()" />
+
+<!-- Reactive binding: value of parent's isLoading field -->
+<JButton label="Save" :loading="isLoading" onClick="save()" />
+```
+
+---
+
+## JButton
+
+A styled button with loading and disabled states.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `label` | `String` | `"Botón"` | Button text |
+| `type` | `String` | `"primary"` | CSS variant class appended as `jr-btn <type>` |
+| `loading` | `boolean` | `false` | When `true`, replaces label with a spinner |
+| `disabled` | `boolean` | `false` | Disables the button |
+| `onClick` | `String` | `""` | `@Call` method expression to invoke on click |
+
+```java JButton.java
+public class JButton extends HtmlComponent {
+    @Bind public String label = "Botón";
+    @Bind public String type = "primary";
+    @Bind public boolean loading = false;
+    @Bind public boolean disabled = false;
+    @Bind public String onClick = "";
+}
+```
+
+**Template:**
+```html
+<button type="button" class="jr-btn {{type}}" @click="{{onClick}}">
+  {{#if loading}}
+    <span class="jr-spinner"></span>
+  {{/if}}
+  {{#if !loading}}
+    <span>{{label}}</span>
+  {{/if}}
+</button>
+```
+
+**Usage:**
+```html
+<JButton label="Nuevo Cliente" type="primary" onClick="openCreate()" />
+<JButton label="Guardando..." :loading="isSaving" type="secondary" onClick="save()" />
+```
+
+---
+
+## JInput
+
+A labeled text input with optional help text and event handlers.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `field` | `Type<String>` | `""` | `name` attribute on the `<input>` (e.g. `form.email`) |
+| `label` | `Type<String>` | `""` | Visible label text |
+| `type` | `Type<String>` | `"text"` | Input type (`text`, `email`, `password`, etc.) |
+| `placeholder` | `Type<String>` | `""` | Placeholder text |
+| `required` | `Type<Boolean>` | `false` | Renders a required asterisk |
+| `disabled` | `Type<Boolean>` | `false` | Disables the input |
+| `helpText` | `Type<String>` | `""` | Small helper text below the input |
+| `autocomplete` | `Type<String>` | `""` | HTML autocomplete attribute |
+| `onInput` | `String` | `""` | `@Call` expression fired on every keystroke |
+| `onChange` | `String` | `""` | `@Call` expression fired on blur/change |
+
+**Usage:**
+```html
+<JInput
+    label="Nombre Completo"
+    :field="form.name"
+    required="true"
+/>
+
+<JInput
+    label="Correo Electrónico"
+    type="email"
+    :field="form.email"
+    required="true"
+    helpText="We'll never share your email."
+/>
+```
+
+---
+
+## JForm
+
+A `<form>` wrapper that renders a title, slots its children into a layout container, and optionally renders a submit button.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `title` | `Type<String>` | `""` | Optional form heading |
+| `layout` | `Type<String>` | `"vertical"` | Layout class applied to the form body |
+| `onSubmit` | `String` | `""` | `@Call` expression to invoke on form submit |
+
+```java JForm.java
+public class JForm extends HtmlComponent {
+    @Bind public Type<String> title = $("");
+    @Bind public Type<String> layout = $("vertical");
+    @Bind public String onSubmit = "";
+}
+```
+
+**Template:**
+```html
+<form class="jrx-form" @submit="{{onSubmit}}" novalidate>
+  {{#if title}}
+    <h2 class="jrx-form-title">{{title}}</h2>
+  {{/if}}
+  <div class="jrx-form-body layout-{{layout}}">
+     <slot />
+  </div>
+  {{#if onSubmit}}
+    <button type="submit">Enviar</button>
+  {{/if}}
+</form>
+```
+
+**Usage:**
+```html
+<JForm title="Crear Cliente" onSubmit="save(form)">
+    <JInput label="Nombre" :field="form.name" required="true" />
+    <JInput label="Email"  :field="form.email" type="email" />
+</JForm>
+```
+
+---
+
+## JSelect
+
+A labeled `<select>` dropdown backed by a list of `JSelect.Option` objects.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `field` | `Type<String>` | `""` | `name` attribute on the `<select>` |
+| `label` | `Type<String>` | `""` | Visible label |
+| `placeholder` | `Type<String>` | `""` | Disabled first option shown as prompt |
+| `required` | `Type<Boolean>` | `false` | HTML required attribute |
+| `disabled` | `Type<Boolean>` | `false` | Disables the select |
+| `helpText` | `Type<String>` | `""` | Small helper text |
+| `options` | `Type<List<Option>>` | `[]` | The options to display |
+| `onChange` | `String` | `""` | `@Call` expression fired on selection change |
+
+`JSelect` ships three static factory helpers for building the options list:
+
+```java
+// From a list of strings
+List<JSelect.Option> opts = JSelect.from("Activo", "Inactivo");
+
+// From a Map<value, label>
+List<JSelect.Option> opts = JSelect.from(Map.of("US", "United States", "MX", "Mexico"));
+
+// From an enum
+List<JSelect.Option> opts = JSelect.fromEnum(Status.class);
+```
+
+**Usage in a page:**
+```java
+@State public List<JSelect.Option> statusOptions = new ArrayList<>();
+
+@Override
+public void onInit() {
+    this.statusOptions = JSelect.from("Activo", "Inactivo");
+}
+```
+
+```html
+<JSelect
+    label="Estado"
+    :field="form.status"
+    :options="statusOptions"
+    required="true"
+    placeholder="Selecciona una opcion"
+/>
+```
+
+---
+
+## JCheckBox
+
+A labeled checkbox input.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `field` | `Type<String>` | `""` | `name` attribute on the `<input>` |
+| `label` | `Type<String>` | `""` | Text displayed next to the checkbox |
+| `required` | `Type<Boolean>` | `false` | Renders a required asterisk |
+| `disabled` | `Type<Boolean>` | `false` | Disables the checkbox |
+| `checked` | `Type<Boolean>` | `false` | Initial checked state |
+| `helpText` | `Type<String>` | `""` | Small helper text |
+| `onChange` | `String` | `""` | `@Call` expression fired on change |
+
+**Usage:**
+```html
+<JCheckBox
+    label="Acepto los términos y condiciones"
+    :field="form.acceptTerms"
+    required="true"
+/>
+```
+
+---
+
+## JTable
+
+A data table with column headers and a row slot. The `#each` directive is used internally to iterate the `data` list; use `expose` to name the row variable in the parent template.
+
+| Field | Type | Description |
+|---|---|---|
+| `columns` | `List<String>` (`@Bind`) | Column header labels |
+| `data` | `List<? extends Serializable>` (`@State`) | Row data |
+| `onRowClick` | `String` (`@Bind`) | `@Call` expression fired when a row is clicked |
+
+```java JTable.java
+public class JTable extends HtmlComponent {
+    @Bind public List<String> columns = new ArrayList<>();
+    @State public List<? extends Serializable> data = new ArrayList<>();
+    @Bind public String onRowClick = "";
+}
+```
+
+**Template pattern (excerpt):**
+```html
+<thead>
+    <tr>
+        {{#each columns as col}}
+            <th>{{col}}</th>
+        {{/each}}
+    </tr>
+</thead>
+<tbody>
+    {{#each data as row}}
+        <tr @click="{{onRowClick}}">
+            <slot />
+        </tr>
+    {{/each}}
+</tbody>
+```
+
+The `<slot />` inside each `<tr>` is filled by the child content you write in the parent template. Use `expose="row"` to make the loop variable accessible to slot children:
+
+**Usage:**
+```html
+<JTable :columns="headers" :data="clients" expose="row">
+    <td>{{row.name}}</td>
+    <td>{{row.email}}</td>
+    <td>
+        <span class="badge {{row.status}}">{{row.status}}</span>
+    </td>
+    <td>
+        <button @click="openEdit(row)">✏️</button>
+        <button @click="delete(row)" style="color:red">🗑️</button>
+    </td>
+</JTable>
+```
+
+When `data` is empty, the table renders a full-width "No hay datos disponibles" row automatically.
+
+---
+
+## JCard
+
+A content card with an optional header (title + subtitle), a body slot, and a footer slot.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `title` | `Type<String>` | `""` | Card title |
+| `subtitle` | `Type<String>` | `""` | Card subtitle, shown below the title |
+| `variant` | `Type<String>` | `"flat"` | CSS variant appended as `jrx-card-<variant>` |
+| `hoverable` | `Type<Boolean>` | `false` | Adds hover effect |
+
+The card exposes two named slots:
+- `<slot />` — the main body content
+- `<slot name="footer" />` — footer content (rendered right-aligned)
+
+**Usage:**
+```html
+<JCard title="User Profile" subtitle="Manage your account" variant="elevated">
+    <p>Name: {{user.name}}</p>
+    <p>Email: {{user.email}}</p>
+    <JButton slot="footer" label="Edit" onClick="openEdit()" />
+</JCard>
+```
+
+---
+
+## JModal
+
+A dialog overlay controlled by a `visible` boolean. The backdrop locks body scroll when open via `client:mount` / `client:unmount` lifecycle hooks.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `visible` | `boolean` (`@Bind`) | `false` | Whether the modal is displayed |
+| `title` | `String` (`@Bind`) | `"Mensaje del Sistema"` | Modal header text |
+| `onClose` | `String` (`@Bind`) | `""` | `@Call` expression fired when the close button is clicked |
+
+```java JModal.java
+public class JModal extends HtmlComponent {
+    @Bind public boolean visible = false;
+    @Bind public String title = "Mensaje del Sistema";
+    @Bind public String onClose = "";
+}
+```
+
+**Template pattern:**
+```html
+{{#if visible}}
+    <div class="jrx-modal-backdrop"
+         client:mount="document.body.style.overflow='hidden'"
+         client:unmount="document.body.style.overflow=''">
+        <div class="jrx-modal-content">
+            <div class="jrx-modal-header">
+                <strong>{{title}}</strong>
+                <button @click="{{onClose}}">&times;</button>
+            </div>
+            <div class="jrx-modal-body">
+                <slot />
+            </div>
+        </div>
+    </div>
+{{/if}}
+```
+
+**Usage:**
+```html
+<JModal :title="modalTitle" :visible="isModalOpen" onClose="closeModal()">
+    <JForm onSubmit="save(form)">
+        <JInput label="Nombre" :field="form.name" required="true" />
+    </JForm>
+</JModal>
+```
+
+---
+
+## Link
+
+A client-side navigation anchor. The `data-router` attribute tells the JReactive JavaScript runtime to intercept the click and perform a SPA-style navigation without a full page reload.
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `href` | `String` (`@Bind`) | `""` | Target URL |
+| `text` | `String` (`@Bind`) | `""` | Link text |
+| `onClick` | `String` (`@Bind`) | `""` | Optional `@Call` expression fired on click |
+
+```java Link.java
+public class Link extends HtmlComponent {
+    @Bind public String href = "";
+    @Bind public String text = "";
+    @Bind public String onClick = "";
+}
+```
+
+**Template:**
+```html
+<a data-router href="{{href}}" @click="{{onClick}}">
+  {{text}}
+</a>
+```
+
+**Usage:**
+```html
+<Link href="/clients" text="Ver Clientes" />
+<Link href="/" text="Inicio" onClick="logNavigation()" />
+```

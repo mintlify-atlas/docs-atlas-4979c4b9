@@ -1,0 +1,66 @@
+---
+title: "@Stateless"
+description: "Zero-server-memory mode. Component state is cryptographically signed, embedded in the HTML response, and sent back by the browser on each request."
+---
+
+`@Stateless` removes all server-side memory requirements for a component. After rendering, the component's state is serialized, signed with a server-side secret, and embedded as a token in the HTML. On the next request, the browser sends the token back, the server verifies the signature, deserializes the state, and continues as if the component were held in memory.
+
+This mode is ideal for serverless or stateless deployments (e.g., AWS Lambda, Cloud Run) where no persistent process memory or external store is available.
+
+## Target
+
+`TYPE`
+
+## Usage
+
+```java StatelessCounterPage.java
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.annotations.Call;
+import com.ciro.jreactive.annotations.Stateless;
+import com.ciro.jreactive.router.Route;
+import java.io.Serializable;
+
+@Route(path = "/stateless-counter")
+@Stateless
+public class StatelessCounterPage extends HtmlComponent implements Serializable {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <p>Count: <strong>{{count}}</strong></p>
+            <button @click="increment()">+1</button>
+          </div>
+        """;
+    }
+}
+```
+
+## Choosing a state mode
+
+| Annotation | Storage | Shared across nodes | Survives restart |
+|------------|---------|---------------------|------------------|
+| `@Stateful` | Redis (external) | Yes | Yes |
+| `@StatefulRam` | JVM heap | No | No |
+| `@Stateless` | Signed HTML token | N/A | Yes |
+| `@Client` | Browser | N/A | No |
+
+<Warning>
+  The entire component state is embedded in the HTML on every render. Large state objects (deep POJOs, long lists) increase page size significantly. Keep `@Stateless` components lean — store only what is strictly necessary to reconstruct the view.
+</Warning>
+
+## Notes
+
+- The component class and all `@State` fields must implement `java.io.Serializable`.
+- The state token is HMAC-signed using the application's secret key. Tampering with the token causes the request to be rejected with an error.
+- `@Stateless` components are inherently safe for horizontal scaling because no node-local state is involved.
+- Do not combine with `@Stateful` or `@StatefulRam` on the same class.
+- If the state grows beyond the configured token size limit, JReactive throws a `StateSizeExceededException` at render time. Tune the limit or switch to `@Stateful`.

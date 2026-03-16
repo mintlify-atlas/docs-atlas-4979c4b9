@@ -1,0 +1,120 @@
+---
+title: JCheckBox
+description: A labeled checkbox input component with form field binding, checked state, and a change event callback.
+---
+
+## Overview
+
+`JCheckBox` renders a `<input type="checkbox">` inside a labelled `<div class="jrx-field jrx-checkbox">` container. The `field` prop sets the `name` attribute so JReactive can deserialize the checked value into the parent form object. A `*` marker is shown next to the label when `required` is `true`.
+
+## Properties
+
+<ParamField path="field" type="Type<String>"  default="(empty)">
+  Maps to the `name` attribute of the `<input type="checkbox">`. Use dot notation to target a form field, e.g. `"form.acceptTerms"`.
+</ParamField>
+
+<ParamField path="label" type="Type<String>"  default="(empty)">
+  The visible label text displayed next to the checkbox.
+</ParamField>
+
+<ParamField path="required" type="Type<Boolean>" default="false">
+  When `true`, appends a `*` marker to the label.
+</ParamField>
+
+<ParamField path="disabled" type="Type<Boolean>" default="false">
+  When `true`, the checkbox is rendered in a disabled state.
+</ParamField>
+
+<ParamField path="checked" type="Type<Boolean>" default="false">
+  The initial checked state of the checkbox.
+</ParamField>
+
+<ParamField path="helpText" type="Type<String>"  default="(empty)">
+  Optional helper text rendered below the checkbox as `<small class="jrx-help">`.
+</ParamField>
+
+<ParamField path="onChange" type="string"  default="(empty)">
+  A `@Call` expression invoked via `@change` when the user toggles the checkbox.
+</ParamField>
+
+## Template output
+
+```html template
+<div class="jrx-field jrx-checkbox">
+  <label>
+    <input
+      type="checkbox"
+      name="{{field}}"
+      @change="{{onChange}}"
+    />
+
+    <span class="jrx-label">
+      {{label}}
+      {{#if required}}
+        <span class="jrx-required">*</span>
+      {{/if}}
+    </span>
+  </label>
+
+  {{#if helpText}}
+    <small class="jrx-help">{{helpText}}</small>
+  {{/if}}
+</div>
+```
+
+## Usage example
+
+```html template
+<JCheckBox
+  label="I accept the terms and conditions"
+  :field="form.acceptTerms"
+  required="true"
+  helpText="You must accept before continuing."
+  onChange="validateTerms(form)"
+/>
+```
+
+## Java integration example
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    public static class SignupForm implements Serializable {
+        @NotBlank public String name;
+        @Email   public String email;
+        public boolean acceptTerms;
+    }
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        if (!form.acceptTerms) {
+            // handle rejection
+            return;
+        }
+        userService.create(form);
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JInput label="Name" :field="form.name" required="true" />
+            <JInput label="Email" type="email" :field="form.email" required="true" />
+
+            <JCheckBox
+              label="I accept the terms and conditions"
+              :field="form.acceptTerms"
+              required="true"
+            />
+
+            <JButton label="Register" onClick="register(form)" />
+        """;
+    }
+}
+```
+
+<Note>
+The `checked` property sets the initial render state but does not create a reactive two-way binding. The actual submitted value is read from the form object when the `@Call` method runs.
+</Note>

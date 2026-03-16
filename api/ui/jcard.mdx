@@ -1,0 +1,119 @@
+---
+title: JCard
+description: A container card component with optional title, subtitle, variant styling, hover effect, and named footer slot.
+---
+
+## Overview
+
+`JCard` renders a styled `<div class="jrx-card">` with an optional header section (title and subtitle) and two slots: a default `<slot />` for the card body and a named `<slot name="footer" />` for footer actions.
+
+The `variant` prop appends a modifier class (`jrx-card-flat`, `jrx-card-elevated`, etc.) and `hoverable` adds a hover effect through the `hoverable` class.
+
+## Properties
+
+<ParamField path="title" type="Type<String>"  default="(empty)">
+  When set, renders a `<div class="jrx-card-header">` containing an `<h2>`. If omitted, the header section is not rendered.
+</ParamField>
+
+<ParamField path="subtitle" type="Type<String>"  default="(empty)">
+  Optional subtitle rendered as `<p class="jrx-card-subtitle">` inside the header. Only rendered when `title` is also set.
+</ParamField>
+
+<ParamField path="variant" type="Type<String>" default="flat">
+  Appended as a modifier class: `jrx-card-{variant}`. Common values: `flat`, `elevated`, `outlined`.
+</ParamField>
+
+<ParamField path="hoverable" type="Type<Boolean>" default="false">
+  When `true`, applies a hover style to the card.
+</ParamField>
+
+## Template output
+
+```html template
+<div class="jrx-card jrx-card-{{variant}}">
+
+  {{#if title}}
+    <div class="jrx-card-header">
+      <h2 class="jrx-card-title">{{title}}</h2>
+
+      {{#if subtitle}}
+        <p class="jrx-card-subtitle">{{subtitle}}</p>
+      {{/if}}
+    </div>
+  {{/if}}
+
+  <div class="jrx-card-body" style="padding: 15px;">
+    <slot />
+  </div>
+
+  <div class="jrx-card-footer"
+       style="padding: 10px 15px; border-top: 1px solid #eee;
+              background: #fdfdfd; display: flex; gap: 10px; justify-content: flex-end;">
+    <slot name="footer" />
+  </div>
+
+</div>
+```
+
+## Usage example
+
+### Basic card with body content
+
+```html template
+<JCard title="Account summary" subtitle="Last updated today" variant="elevated">
+  <p>Your balance is <strong>$1,200.00</strong>.</p>
+</JCard>
+```
+
+### Card with footer slot
+
+Use `slot="footer"` on a child element to project it into the card footer.
+
+```html template
+<JCard title="Confirm deletion" variant="outlined">
+  <p>Are you sure you want to delete this record?</p>
+
+  <div slot="footer">
+    <JButton label="Cancel"  type="secondary" onClick="closeModal()" />
+    <JButton label="Delete"  type="danger"    onClick="confirmDelete()" />
+  </div>
+</JCard>
+```
+
+## Java integration example
+
+```java DashboardPage.java
+@Route(path = "/dashboard")
+@Client
+public class DashboardPage extends AppPage {
+
+    @State public int totalClients = 0;
+
+    @Override
+    public void onInit() {
+        this.totalClients = clientService.count();
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JCard
+              title="Clients"
+              subtitle="Registered accounts"
+              variant="elevated"
+              hoverable="true"
+            >
+              <p style="font-size: 2rem; font-weight: bold;">{{totalClients}}</p>
+
+              <div slot="footer">
+                <JButton label="View all" onClick="goToClients()" />
+              </div>
+            </JCard>
+        """;
+    }
+}
+```
+
+<Tip>
+Use `variant="elevated"` for cards that should stand out on the page and `variant="flat"` for content that sits flush inside another panel.
+</Tip>

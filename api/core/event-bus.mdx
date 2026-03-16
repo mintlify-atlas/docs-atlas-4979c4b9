@@ -1,0 +1,114 @@
+---
+title: EventBus
+description: A lightweight, per-component pub/sub event dispatcher backed by ConcurrentHashMap and CopyOnWriteArrayList for safe concurrent use.
+---
+
+`EventBus` provides a simple string-keyed publish/subscribe mechanism. Components can emit named events with a payload and register handlers that are called synchronously when those events fire.
+
+## Class signature
+
+```java EventBus.java
+public class EventBus {
+    public <T> void on(String event, Consumer<T> handler) { ... }
+    public void emit(String event, Object payload) { ... }
+}
+```
+
+## Thread safety
+
+The internal map is a `ConcurrentHashMap<String, List<Consumer<Object>>>` where each value is a `CopyOnWriteArrayList`. This means:
+
+- `on()` and `emit()` can be called from different threads without external synchronization.
+- Iterating handlers during `emit()` is lock-free (copy-on-write snapshot).
+- `emit()` delivers events **synchronously** on the calling thread.
+
+---
+
+## Methods
+
+### `on(String event, Consumer<T> handler)`
+
+Registers a handler for the given event name. Multiple handlers for the same event are allowed and are called in registration order.
+
+<ParamField path="event" type="String" required>
+  The event name to listen for. Case-sensitive.
+</ParamField>
+
+<ParamField path="handler" type="Consumer<T>" required>
+  The callback to invoke when the event fires. The generic `T` is unchecked at runtime — ensure it matches the payload type used by `emit()`.
+</ParamField>
+
+```java
+EventBus bus = new EventBus();
+
+bus.on("user:login", (String username) -> {
+    System.out.println("User logged in: " + username);
+});
+```
+
+---
+
+### `emit(String event, Object payload)`
+
+Fires all handlers registered for the given event, passing `payload` to each one. If no handlers are registered for `event`, this is a no-op.
+
+<ParamField path="event" type="String" required>
+  The event name to fire. Must match the name used in `on()`.
+</ParamField>
+
+<ParamField path="payload" type="Object" required>
+  The value passed to each handler. Can be any object, including `null`.
+</ParamField>
+
+```java
+bus.emit("user:login", "alice"); // calls all handlers registered for "user:login"
+```
+
+---
+
+## Scope: per-instance
+
+`EventBus` is **not** a global singleton. Each instance you create is independent. If you need to share events across components, inject the same `EventBus` instance into both.
+
+```java
+// In a parent component
+public class DashboardPage extends HtmlComponent {
+
+    private final EventBus bus = new EventBus();
+
+    @Override
+    public void onInit() {
+        bus.on("refresh", (Void __) -> {
+            // Re-render triggered from child
+            _clearCache();
+        });
+    }
+
+    @Override
+    protected String template() {
+        // Pass the bus to a child via constructor or setter before rendering
+        return renderChild("DataTable", Map.of("ref", "table"), Map.of());
+    }
+}
+```
+
+<Tip>For cross-component communication at the session level, prefer passing the `EventBus` via a constructor argument or a setter method called in the parent's `onInit()`. This keeps components testable without relying on static state.</Tip>
+
+---
+
+## Example: coordinating sibling components
+
+```java
+// Shared event bus passed to both siblings
+EventBus sharedBus = new EventBus();
+
+// Component A emits
+sharedBus.emit("cart:updated", cartSize);
+
+// Component B listens
+sharedBus.on("cart:updated", (Integer size) -> {
+    badgeCount.set(size);
+});
+```
+
+<Warning>There is no built-in way to remove a specific handler after registration. If a component that registered a handler is unmounted while the `EventBus` is still referenced, the handler closure may hold a reference to the unmounted component. Design your bus scope carefully to avoid unintentional memory retention.</Warning>

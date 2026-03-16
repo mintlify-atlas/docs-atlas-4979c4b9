@@ -1,97 +1,131 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "JReactive"
+description: "Build reactive, component-based web UIs entirely in Java — no JavaScript required. Real-time WebSocket state synchronization, server-side rendering, and a familiar component model."
 ---
 
-## Setting up
-
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first reactive component in under 5 minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="download" href="/installation">
+    Add JReactive to your Spring Boot or standalone project.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="book" href="/concepts/components">
+    Understand components, state, and reactivity.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/annotations/bind">
+    Full reference for all annotations and classes.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## What is JReactive?
 
-Everything you need to create world-class documentation.
+JReactive is a Java framework that lets you build fully interactive, reactive web interfaces using pure Java. It brings the component model popularized by React and Vue to the JVM — without requiring you to write any client-side JavaScript.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+When a user interacts with your UI, JReactive's runtime communicates over a WebSocket to update only the changed parts of the DOM, keeping the UI in sync with your Java state in real time.
 
-## Need inspiration?
+```java CounterComponent.java
+import com.ciro.jreactive.*;
+import com.ciro.jreactive.annotations.*;
+import com.ciro.jreactive.router.Route;
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+@Route(path = "/counter")
+@StatefulRam
+public class CounterPage extends HtmlComponent {
+
+    @State int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+        updateState("count");
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div>
+              <p>Count: <strong>{{count}}</strong></p>
+              <button @click="increment()">Increment</button>
+            </div>
+        """;
+    }
+}
+```
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Zero JavaScript required" icon="java">
+    Define your entire UI in Java. JReactive generates the necessary client-side glue automatically.
+  </Card>
+  <Card title="Real-time state sync" icon="bolt">
+    WebSocket-powered synchronization pushes state changes from server to browser instantly.
+  </Card>
+  <Card title="Multiple state modes" icon="database">
+    Choose from `@StatefulRam`, `@Stateful` (Redis), `@Stateless` (crypto-signed), or `@Client` (CSR) per component.
+  </Card>
+  <Card title="Built-in routing" icon="map">
+    SPA-style navigation with `@Route`, `@Layout`, `@Param`, and `@UrlParam` — no additional router setup needed.
+  </Card>
+  <Card title="APT code generation" icon="gear">
+    The annotation processor generates scoped CSS injectors and client-side renderers at compile time.
+  </Card>
+  <Card title="Spring Boot ready" icon="leaf">
+    Drop the starter dependency in and JReactive auto-configures itself via `JReactiveAutoConfiguration`.
+  </Card>
+  <Card title="Redis scaling" icon="server">
+    Distribute sessions across JVM instances using the `jreactive-store-redis` module.
+  </Card>
+  <Card title="UI component library" icon="puzzle-piece">
+    Ready-to-use components: `JButton`, `JInput`, `JForm`, `JTable`, `JModal`, and more.
+  </Card>
+</CardGroup>
+
+## How it works
+
+<Steps>
+  <Step title="Define a component">
+    Extend `HtmlComponent`, annotate fields with `@State` or `@Bind`, and override `template()` with your HTML markup.
+  </Step>
+  <Step title="Register a route">
+    Annotate your component class with `@Route(path = "/my-page")` to map it to a URL.
+  </Step>
+  <Step title="Expose server actions">
+    Mark methods with `@Call` to make them invocable from browser events like `@click="myMethod()"`.
+  </Step>
+  <Step title="Let JReactive handle the rest">
+    When state changes, JReactive diffs the component tree and pushes minimal DOM patches to the browser over WebSocket — no page reloads.
+  </Step>
+</Steps>
+
+## Choose your setup
+
+<Tabs>
+  <Tab title="Spring Boot">
+    Add the `jreactive-starter-spring` dependency to your Maven project and Spring Boot auto-configuration takes care of the rest.
+
+    ```xml pom.xml
+    <dependency>
+      <groupId>com.ciro</groupId>
+      <artifactId>jreactive-starter-spring</artifactId>
+      <version>0.9.9</version>
+    </dependency>
+    ```
+  </Tab>
+  <Tab title="Standalone">
+    Use `JReactiveServer` with the Undertow-based runtime for framework-free deployments.
+
+    ```java Main.java
+    import com.ciro.jreactive.standalone.JReactiveServer;
+
+    public class Main {
+        public static void main(String[] args) {
+            JReactiveServer server = new JReactiveServer(8080);
+            server.addRoute("/", HomePage::new);
+            server.start();
+        }
+    }
+    ```
+  </Tab>
+</Tabs>

@@ -1,0 +1,87 @@
+---
+title: "@DomMode"
+description: "Controls how JReactive manages DOM updates for a component: either through client-side JavaScript delta patching (CLIENT_MANAGED) or server-generated HTML fragments (SERVER_OWNED)."
+---
+
+`@DomMode` selects the DOM update strategy for a component. The default mode (`CLIENT_MANAGED`) is the standard JReactive approach: the server sends JSON state deltas and the browser's JavaScript runtime patches the DOM. The alternative mode (`SERVER_OWNED`) sends complete HTML fragments from the server, implementing an HTML-over-the-wire pattern.
+
+## Target
+
+`TYPE`
+
+## Attributes
+
+<ParamField path="value" type="JrxDomMode" default="JrxDomMode.CLIENT_MANAGED">
+  The DOM management strategy. Accepts `JrxDomMode.CLIENT_MANAGED` or `JrxDomMode.SERVER_OWNED`.
+</ParamField>
+
+## `JrxDomMode` enum values
+
+| Value | Description |
+|-------|-------------|
+| `CLIENT_MANAGED` | JavaScript manages the DOM via JSON deltas and compiled templates. This is the default and requires no annotation. |
+| `SERVER_OWNED` | Java controls the DOM entirely. On each state change, the server renders a new HTML fragment and sends it to the browser, which morphs the current DOM using [idiomorph](https://github.com/bigskysoftware/idiomorph). |
+
+## Usage
+
+### Default mode (implicit)
+
+When no `@DomMode` annotation is present, `CLIENT_MANAGED` is used. You only need the annotation when switching to `SERVER_OWNED`.
+
+```java ClientManagedComponent.java
+// No @DomMode needed — CLIENT_MANAGED is the default
+public class ClientManagedComponent extends HtmlComponent {
+
+    @State int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return "<p>Count: {{count}}</p>";
+    }
+}
+```
+
+### Server-owned DOM
+
+```java ServerOwnedPage.java
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.annotations.Call;
+import com.ciro.jreactive.annotations.DomMode;
+import com.ciro.jreactive.JrxDomMode;
+import com.ciro.jreactive.router.Route;
+
+@Route(path = "/server-owned")
+@DomMode(JrxDomMode.SERVER_OWNED)
+public class ServerOwnedPage extends HtmlComponent {
+
+    @State int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <p>Count: <strong>""" + count + """</strong></p>
+            <button @click="increment()">+1</button>
+          </div>
+        """;
+    }
+}
+```
+
+## Notes
+
+- `SERVER_OWNED` is sometimes called "HTML on the wire" or "Hypermedia-driven" mode. It is conceptually similar to HTMX or Turbo Streams.
+- In `SERVER_OWNED` mode, the browser uses [idiomorph](https://github.com/bigskysoftware/idiomorph) to apply DOM morphing, which preserves focus and scroll position during updates.
+- Do not combine `@DomMode(SERVER_OWNED)` with `@Client` — `@Client` requires `CLIENT_MANAGED` because it relies on a JavaScript template renderer.
+- `CLIENT_MANAGED` is more efficient for high-frequency updates (e.g., live clocks, real-time feeds) because it sends compact JSON rather than HTML strings.
+- `SERVER_OWNED` is simpler to debug (you can inspect the raw HTML patches) and works well when template logic is complex or involves server-only data.

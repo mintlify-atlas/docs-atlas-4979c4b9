@@ -1,0 +1,90 @@
+---
+title: "@Route"
+description: "Maps a component class to a URL path, registering it in the JReactive SPA router."
+---
+
+`@Route` registers a component as a routable page in the client-side SPA router. When the user navigates to the path (via a `data-router` link or direct URL), JReactive instantiates the component, renders it server-side, and hydrates it in the browser without a full page reload.
+
+## Target
+
+`TYPE`
+
+## Attributes
+
+<ParamField path="path" type="string" required>
+  The URL path this component handles. Must start with `/`. Supports path parameter placeholders using curly-brace syntax: `{paramName}`.
+</ParamField>
+
+## Usage
+
+### Static route
+
+```java HomePage.java
+@Route(path = "/")
+public class HomePage extends AppPage {
+
+    @Override
+    protected String template() {
+        return """
+          <div class="page">
+            <a href="/users/10" data-router>Go to user page</a>
+            <a href="/signup" data-router>Go to signup</a>
+          </div>
+        """;
+    }
+}
+```
+
+### Path parameters
+
+Use `{paramName}` placeholders in the path and pair them with `@Param` fields on the component to capture dynamic segments.
+
+```java UserPage.java
+@Route(path = "/users/{id}")
+public class UserPage extends AppPage {
+
+    @Param("id")
+    @Bind String userId;
+
+    @Bind public Type<String> name = $("");
+
+    @Override
+    protected void onInit() {
+        // userId is populated before onInit() runs
+        if ("10".equals(userId)) {
+            this.name.set("Ciro (Admin)");
+        } else {
+            this.name.set("Visitor " + userId);
+        }
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <h2>User {{name}}</h2>
+            <p>ID: {{userId}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+### Combining with layout and state annotations
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+    // ...
+}
+```
+
+## Notes
+
+- Every component registered with `@Route` must extend `HtmlComponent` (directly or indirectly).
+- Path matching is exact by default. Two routes with paths `/users/{id}` and `/users/new` both work; the more specific path (`/users/new`) takes precedence.
+- Use `data-router` on `<a>` tags to enable SPA navigation without a full page reload.
+- `@Route` is a `TYPE`-level annotation, so each class can have at most one route path.
+- To wrap a routed page in a shared chrome (nav bar, footer, etc.), combine with `@Layout`.

@@ -1,0 +1,158 @@
+---
+title: ComponentAccessor
+description: A compile-time generated SPI that replaces Java reflection for field reads, field writes, and method invocations on HtmlComponent subclasses.
+---
+
+`ComponentAccessor<T>` is an internal SPI interface. At compile time, the `jreactive-apt` annotation processor generates one concrete `__Accessor` class per `HtmlComponent` subclass. These generated classes implement `ComponentAccessor` and bypass runtime reflection, making field access and method dispatch significantly faster.
+
+<Info>You do not implement `ComponentAccessor` yourself. The APT processor generates the implementation automatically for every class that extends `HtmlComponent` during compilation.</Info>
+
+## Interface
+
+```java ComponentAccessor.java
+public interface ComponentAccessor<T extends HtmlComponent> {
+
+    // Replaces Field.set()
+    void write(T component, String property, Object value);
+
+    // Replaces Field.get()
+    Object read(T component, String property);
+
+    // Replaces Method.invoke()
+    Object call(T component, String method, Object... args);
+
+    default String renderStatic(T component) { return null; }
+
+    default java.util.List<com.ciro.jreactive.ast.JrxNode> getAst() { return null; }
+    default String getScopedCss() { return null; }
+}
+```
+
+---
+
+## Methods
+
+### `write(T component, String property, Object value)`
+
+Sets a field on the component by name. Replaces `Field.set()` at runtime.
+
+<ParamField path="component" type="T" required>
+  The component instance to mutate.
+</ParamField>
+
+<ParamField path="property" type="String" required>
+  The field name as it appears in the Java source.
+</ParamField>
+
+<ParamField path="value" type="Object" required>
+  The value to assign. Type coercion (if any) is handled by the generated code.
+</ParamField>
+
+---
+
+### `read(T component, String property)`
+
+Reads a field value from the component by name. Replaces `Field.get()` at runtime.
+
+<ParamField path="component" type="T" required>
+  The component instance to read from.
+</ParamField>
+
+<ParamField path="property" type="String" required>
+  The field name to read.
+</ParamField>
+
+<ResponseField name="return" type="Object">
+  The current field value.
+</ResponseField>
+
+---
+
+### `call(T component, String method, Object... args)`
+
+Invokes a method on the component by name. Replaces `Method.invoke()` at runtime. Used by the JReactive runtime to dispatch `@Call` event handlers triggered from the browser.
+
+<ParamField path="component" type="T" required>
+  The component instance on which to invoke the method.
+</ParamField>
+
+<ParamField path="method" type="String" required>
+  The method name as it appears in the Java source.
+</ParamField>
+
+<ParamField path="args" type="Object...">
+  Arguments to pass to the method.
+</ParamField>
+
+<ResponseField name="return" type="Object">
+  The method's return value, or `null` for `void` methods.
+</ResponseField>
+
+---
+
+### `getScopedCss()`
+
+Returns the pre-processed, scope-attributed CSS for this component. The APT processor reads the component's `.css` resource at compile time, applies a scope attribute (e.g., `[jrx-sc-MyComponent]`), minifies it, and embeds the result as a string literal in the generated accessor.
+
+This means CSS loading at runtime is `O(1)` — a simple string return — rather than a classpath resource read.
+
+<ResponseField name="return" type="String">
+  The scoped and minified CSS string, or `null` if no CSS resource exists for this component.
+</ResponseField>
+
+---
+
+## AccessorRegistry
+
+`AccessorRegistry` is the global lookup table that maps component classes to their generated accessors.
+
+```java AccessorRegistry.java
+public class AccessorRegistry {
+    public static void register(Class<?> clazz, ComponentAccessor<?> accessor) { ... }
+    public static <T extends HtmlComponent> ComponentAccessor<T> get(Class<T> clazz) { ... }
+    public static boolean has(Class<?> clazz) { ... }
+}
+```
+
+### How lookup works
+
+1. `get(Class<T>)` checks the in-memory cache first (`ConcurrentHashMap`).
+2. If not cached, it attempts to load the class `ClassName + "__Accessor"` via `Class.forName()`.
+3. Loading the generated class triggers its `static {}` block, which calls `AccessorRegistry.register()`.
+4. If no accessor class exists, a `NO_OP` sentinel is stored to prevent repeated failed lookups.
+
+```java AccessorRegistry.java
+// Runtime lookup used by the ComponentEngine
+ComponentAccessor<MyComponent> acc = AccessorRegistry.get(MyComponent.class);
+if (acc != null) {
+    acc.call(component, "increment");
+} else {
+    // Fallback to reflection
+}
+```
+
+---
+
+## Generated class naming convention
+
+For a component class `com.example.CounterLeaf`, the APT generates:
+
+```
+com.example.CounterLeaf__Accessor
+```
+
+The generated class is placed in the same package as the original component so it has access to package-private and protected members.
+
+---
+
+## What gets generated
+
+For every `HtmlComponent` subclass, the APT produces a class that:
+
+- Has a `static {}` block that calls `AccessorRegistry.register(CounterLeaf.class, new CounterLeaf__Accessor())`.
+- Implements `write()` and `read()` as direct field assignments (no reflection).
+- Implements `call()` as a switch on method names with direct method calls (no reflection).
+- Implements `getScopedCss()` returning the inlined, pre-scoped CSS string.
+- Optionally implements `getAst()` returning the pre-parsed template AST for zero-parse-cost rendering.
+
+<Tip>If you add a new `@Call` method or `@Bind` field to a component, a clean rebuild is required to regenerate the accessor. If the accessor is missing at runtime, JReactive falls back to reflection automatically — functionality is preserved but performance degrades.</Tip>

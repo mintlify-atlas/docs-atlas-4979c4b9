@@ -1,0 +1,113 @@
+---
+title: "@Bind"
+description: "Exposes a component field to the HTML template as a reactive binding. The browser can send changes back to the server unless the field is read-only."
+---
+
+`@Bind` marks a field for two-way data binding between the server component and the client template. The field value is serialized into the initial HTML and kept in sync over the WebSocket connection. When the user changes a bound input, the new value is pushed back to the server and the field is updated automatically.
+
+## Target
+
+`FIELD`
+
+## Attributes
+
+<ParamField path="value" type="string"  default="(empty)">
+  The key name exposed to the template. If empty, the field's Java name is used.
+</ParamField>
+
+<ParamField path="readOnly" type="boolean" default="false">
+  When `true`, changes sent from the browser are ignored. The field still renders in the template but is not writable from the client.
+</ParamField>
+
+## Usage
+
+### Plain field
+
+The simplest form binds a plain Java field. The key in the template defaults to the field name.
+
+```java ColorBox.java
+public class ColorBox extends HtmlComponent {
+
+    @Bind String text = "Click me!";
+
+    @Override
+    protected String template() {
+        return """
+            <div class="demo-box">
+                <span class="demo-label">{{text}}</span>
+            </div>
+        """;
+    }
+}
+```
+
+### Reactive `Type<T>` field
+
+Use `Type<T>` (wrapping a value with `$()`) when you need to update the bound value programmatically from the server without calling `updateState()` explicitly. Setting the value via `type.set(...)` automatically triggers a DOM patch.
+
+```java ClockLeaf.java
+import static com.ciro.jreactive.Type.$;
+
+public class ClockLeaf extends HtmlComponent {
+
+    @Bind public Type<String> greet = $("Hello");
+    @Bind public Type<String> clock = $("--:--:--");
+
+    @Override
+    protected void onMount() {
+        // Updating via .set() pushes a DOM delta immediately
+        clock.set(java.time.LocalTime.now().withNano(0).toString());
+    }
+
+    @Override
+    public String template() {
+        return """
+               <div class="clock">
+                 <h1>{{greet}}, the time is {{clock}}!</h1>
+                 <input name="greet" placeholder="Type greeting">
+               </div>
+               """;
+    }
+}
+```
+
+### Path parameter combined with `@Bind`
+
+`@Bind` can be combined with `@Param` to expose a path parameter directly to the template.
+
+```java UserPage.java
+@Route(path = "/users/{id}")
+public class UserPage extends AppPage {
+
+    @Param("id")
+    @Bind String userId;
+
+    @Bind public Type<String> name = $("");
+
+    @Override
+    protected void onInit() {
+        if ("10".equals(userId)) {
+            this.name.set("Ciro (Admin)");
+        } else {
+            this.name.set("Visitante " + userId);
+        }
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <h2>User {{name}}</h2>
+            <p>ID: {{userId}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+## Notes
+
+- The template key defaults to the Java field name. Use `@Bind("customKey")` to expose it under a different name.
+- `readOnly = true` is useful for display-only values that are derived or computed on the server and must not be overwritten by the client.
+- `@Bind` fields participate in the WebSocket delta protocol. Only fields that have actually changed are sent to the browser on each update cycle.
+- For collections, consider using `@State` with a smart collection instead of `@Bind`, since `@Bind` does not wrap lists in `SmartList`.

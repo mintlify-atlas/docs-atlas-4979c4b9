@@ -1,0 +1,153 @@
+---
+title: JTable
+description: A data table component with configurable column headers, a reactive data list, slot-based row cell templates, and an optional row-click handler.
+---
+
+## Overview
+
+`JTable` renders a `<table>` element inside a scrollable container. Column headers are driven by a `List<String>` bound via `columns`. Row data is a `List<? extends Serializable>` held in `@State` and updated by `@Call` methods. Each row's cells are defined via the `<slot />` using the `expose` attribute to name the current row variable.
+
+When the data list is empty, a centred "No hay datos disponibles" message is shown in place of the rows.
+
+## Properties
+
+<ParamField path="columns" type="List<String>">
+  `@Bind` — An ordered list of column header strings. Rendered as `<th>` elements inside `<thead>`.
+</ParamField>
+
+<ParamField path="data" type="List<? extends Serializable>">
+  `@State` — The list of row objects. Each item is iterated with `{{#each data as row}}`. Update this list from a `@Call` method to trigger a reactive re-render.
+</ParamField>
+
+<ParamField path="onRowClick" type="string"  default="(empty)">
+  `@Bind` — A `@Call` expression invoked via `@click` on each `<tr>`. Leave empty for non-interactive rows.
+</ParamField>
+
+## Template output
+
+```html template
+<div class="jrx-table-container">
+  <table class="jrx-table">
+    <thead>
+      <tr>
+        {{#each columns as col}}
+          <th>{{col}}</th>
+        {{/each}}
+      </tr>
+    </thead>
+    <tbody>
+      {{#each data as row}}
+        <tr @click="{{onRowClick}}">
+          <slot />
+        </tr>
+      {{/each}}
+      {{#if !data.size}}
+        <tr>
+          <td colspan="100%" style="text-align:center; padding: 20px; color: #888;">
+            No hay datos disponibles
+          </td>
+        </tr>
+      {{/if}}
+    </tbody>
+  </table>
+</div>
+```
+
+## Slot and `expose` pattern
+
+The `<slot />` inside the row template receives the child `<td>` elements you define in the parent. Use the `expose` attribute on `<JTable>` to name the loop variable that your cell templates can reference with `{{row.field}}` syntax.
+
+```html template
+<JTable :columns="headers" :data="users" expose="row">
+  <td>{{row.id}}</td>
+  <td><strong>{{row.name}}</strong></td>
+  <td>{{row.email}}</td>
+  <td>
+    <button @click="deleteUser(row)" style="color: red; border: none; background: none;">
+      Delete
+    </button>
+  </td>
+</JTable>
+```
+
+<Note>
+The `expose="row"` attribute on the `<JTable>` tag controls what name is used for the current iteration item inside your slot template. Without it, inner cell expressions cannot reference the row object.
+</Note>
+
+## Java integration example
+
+The following is adapted from `TableTestPage.java` in the demo application.
+
+```java TableTestPage.java
+@Route(path = "/table-test")
+@Client
+public class TableTestPage extends AppPage {
+
+    public static class UserData implements Serializable {
+        public int id;
+        public String name;
+        public String email;
+
+        public UserData(int id, String name, String email) {
+            this.id = id; this.name = name; this.email = email;
+        }
+    }
+
+    @Bind public List<String> headers = List.of("ID", "Name", "Email", "Actions");
+
+    @State public List<UserData> users = new ArrayList<>(List.of(
+        new UserData(1, "Alice", "alice@example.com"),
+        new UserData(2, "Bob",   "bob@example.com")
+    ));
+
+    @State int idCounter = 100;
+
+    @Call
+    public void addUser() {
+        idCounter++;
+        users.add(new UserData(idCounter, "New " + idCounter, "user" + idCounter + "@example.com"));
+    }
+
+    @Call
+    public void deleteUser(UserData user) {
+        users.removeIf(u -> u.id == user.id);
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="padding: 20px;">
+              <button @click="addUser()" style="margin-bottom: 15px;">
+                Add user
+              </button>
+
+              <JTable :columns="headers" :data="users" expose="row">
+                <td>{{row.id}}</td>
+                <td><strong>{{row.name}}</strong></td>
+                <td>{{row.email}}</td>
+                <td>
+                  <button @click="deleteUser(row)" style="color: red;">Delete</button>
+                </td>
+              </JTable>
+
+              <p>Total: {{users.size}} users</p>
+            </div>
+        """;
+    }
+}
+```
+
+<Tip>
+Because `data` is annotated `@State`, any mutation (add, remove, update) in a `@Call` method automatically pushes a diff to the client over WebSocket — no manual `updateState()` call is needed.
+</Tip>
+
+## Built-in styles
+
+`JTable` ships inline CSS scoped to the `.jrx-table-container` and `.jrx-table` classes:
+
+| Selector | Effect |
+|---|---|
+| `.jrx-table-container` | Full width, horizontal scroll, rounded border |
+| `.jrx-table th` | Light grey header background, 12 px padding |
+| `.jrx-table td` | 12 px padding, light bottom border |
+| `.jrx-table tr:hover` | `#f9f9f9` background, pointer cursor |

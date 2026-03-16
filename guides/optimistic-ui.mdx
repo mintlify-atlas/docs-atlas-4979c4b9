@@ -1,0 +1,295 @@
+---
+title: Optimistic UI
+description: Build instant-feeling interfaces by applying client-side state mutations before the server confirms the action.
+---
+
+In a standard JReactive flow, a user action triggers a `@Call` on the server, the server updates state, and the delta is pushed back to the client over WebSocket. This is correct and predictable, but the user perceives the latency of every server round-trip as a visible delay.
+
+**Optimistic UI** inverts this: the client applies a predicted state change *immediately*, then sends the request to the server in the background. If the server succeeds, the prediction is confirmed. If the server fails, the client rolls back to the state it received in the error response.
+
+## The three optimistic patterns
+
+JReactive provides three complementary mechanisms, which can be combined on the same element.
+
+### 1. `data-optimistic` — inline state mutations
+
+A semicolon-delimited list of `field: expression` pairs. The expressions are evaluated against the current client-side state immediately when the button is clicked, before the server call is made.
+
+```html
+<button
+    @click="buyItem()"
+    data-optimistic="items:+1; total:+150.50">
+    Buy ($150.50)
+</button>
+```
+
+Special tokens:
+- `+N` / `-N` — numeric increment/decrement relative to the current value
+- `toggle` — boolean flip
+- A literal value — assigned directly
+
+From `OptimisticTestPage`:
+
+```html OptimisticTestPage.java
+<button
+    @click="toggleLikeOptimistic()"
+    data-optimistic="
+        likes: hasLiked ? -1 : +1;
+        heartIcon: hasLiked ? '\uD83E\uDD0D' : '\u2764\uFE0F';
+        heartColor: hasLiked ? '#ccc' : '#e25555';
+        hasLiked: toggle
+    ">
+    Optimistic: 0ms response
+</button>
+```
+
+The corresponding server method just does the real work — it does not need to know whether the call was optimistic:
+
+```java OptimisticTestPage.java
+@Call
+public void toggleLikeOptimistic() {
+    simularLatencia(1000); // 1 second artificial delay
+    procesarLike();
+}
+```
+
+From the user's perspective the heart icon and counter update in 0ms. The server confirmation arrives 1 second later and reconciles the final state.
+
+### 2. `jrx-optimistic-class` — CSS class toggle
+
+Instantly adds a CSS class to the element while the request is in flight. The class is removed once the server response arrives (either success or error).
+
+```html OptimisticShowcasePage.java
+<button
+    class="btn-heart {{#if liked}}is-liked{{/if}}"
+    @click="toggleLike()"
+    jrx-optimistic-class="is-liked">
+    {{#if liked}}\u2764\uFE0F{{else}}\uD83E\uDD0D{{/if}} Me gusta ({{likesCount}})
+</button>
+```
+
+The button turns red immediately (via the `is-liked` class) even though the like count update — which requires the server delta — arrives one second later.
+
+### 3. `jrx-optimistic-hide` — instant element removal
+
+Immediately hides a DOM element (using CSS) without waiting for the server to confirm deletion. The selector is evaluated relative to the clicked element.
+
+```html OptimisticShowcasePage.java
+{{#each tasks as task}}
+    <div class="task-row">
+        <span>{{task}}</span>
+        <button
+            @click="deleteTask(task)"
+            jrx-optimistic-hide=".task-row">
+            Delete
+        </button>
+    </div>
+{{/each}}
+```
+
+The entire `.task-row` div disappears as soon as the button is pressed. If `deleteTask` throws an exception on the server, the row reappears.
+
+## Automatic rollback on server errors
+
+All three mechanisms are automatically reversed if the server-side `@Call` method throws an exception. JReactive sends back the pre-call state in the error response, and the client discards its optimistic snapshot and re-renders from the server truth.
+
+This is demonstrated in the "bomb" action from `OptimisticShowcasePage`:
+
+```java OptimisticShowcasePage.java
+@Call
+public void bombAction() {
+    simularLag(); // 1 second delay
+    throw new RuntimeException("\uD83D\uDD25 Se cayó el servidor en medio de la acción.");
+}
+```
+
+```html
+<button
+    @click="bombAction()"
+    jrx-optimistic-class="is-loading"
+    data-optimistic="likesCount:+1000">
+    Dangerous action (+1000 fake likes)
+</button>
+```
+
+The counter jumps by 1000 and the button turns grey immediately. One second later the server throws, JReactive pushes the original state back, and everything reverts.
+
+## Full example: OptimisticTestPage
+
+This page compares all three response styles side by side with a deliberately slow server (1 second simulated latency):
+
+```java OptimisticTestPage.java
+@Route(path = "/optimistic-test")
+public class OptimisticTestPage extends AppPage {
+
+    @State public int likes = 145;
+    @State public boolean hasLiked = false;
+    @State public String heartIcon = "\uD83E\uDD0D";
+    @State public String heartColor = "#ccc";
+
+    @Call
+    public void toggleLikeNormal() {
+        simularLatencia(1000);
+        procesarLike();
+    }
+
+    @Call
+    public void toggleLikeOptimistic() {
+        simularLatencia(1000);
+        procesarLike();
+    }
+
+    @Call
+    public void toggleLikeError() {
+        simularLatencia(1000);
+        throw new RuntimeException("Error 500: DB failure.");
+    }
+
+    private void procesarLike() {
+        if (hasLiked) {
+            likes--; hasLiked = false;
+            heartIcon = "\uD83E\uDD0D"; heartColor = "#ccc";
+        } else {
+            likes++; hasLiked = true;
+            heartIcon = "\u2764\uFE0F"; heartColor = "#e25555";
+        }
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="padding: 40px; font-family: system-ui, sans-serif; max-width: 600px;">
+                <h1>Optimistic UI Lab</h1>
+                <p>All buttons have a <strong>1 second server delay</strong>.</p>
+
+                <h1 style="color: {{heartColor}}">{{heartIcon}} {{likes}}</h1>
+
+                <button @click="toggleLikeNormal()">
+                    Normal: waits for server (1s lag)
+                </button>
+
+                <button @click="toggleLikeOptimistic()"
+                        data-optimistic="
+                            likes: hasLiked ? -1 : +1;
+                            heartIcon: hasLiked ? '\uD83E\uDD0D' : '\u2764\uFE0F';
+                            heartColor: hasLiked ? '#ccc' : '#e25555';
+                            hasLiked: toggle
+                        ">
+                    Optimistic: 0ms reaction
+                </button>
+
+                <button @click="toggleLikeError()"
+                        data-optimistic="
+                            likes: hasLiked ? -1 : +1;
+                            heartIcon: hasLiked ? '\uD83E\uDD0D' : '\u2764\uFE0F';
+                            heartColor: hasLiked ? '#ccc' : '#e25555';
+                            hasLiked: toggle
+                        ">
+                    Rollback: optimistic + server error
+                </button>
+            </div>
+        """;
+    }
+}
+```
+
+## Full example: OptimisticShowcasePage
+
+```java OptimisticShowcasePage.java
+@Route(path = "/optimistic")
+public class OptimisticShowcasePage extends AppPage {
+
+    @State public boolean liked = false;
+    @State public int likesCount = 42;
+    @State public List<String> tasks = new ArrayList<>(List.of(
+        "Aprobar PR de JReactive", "Lanzar v1.0", "Celebrar"));
+    @State public double total = 0.0;
+    @State public int items = 0;
+
+    @Call public void toggleLike() {
+        simularLag();
+        this.liked = !this.liked;
+        this.likesCount += this.liked ? 1 : -1;
+    }
+
+    @Call public void deleteTask(String task) {
+        simularLag();
+        this.tasks.remove(task);
+    }
+
+    @Call public void buyItem() {
+        simularLag();
+        this.total += 150.50;
+        this.items++;
+    }
+
+    @Call public void bombAction() {
+        simularLag();
+        throw new RuntimeException("\uD83D\uDD25 Server crashed.");
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div class="showcase-container">
+
+                <!-- Pattern 1: CSS class toggle -->
+                <button class="btn-heart {{#if liked}}is-liked{{/if}}"
+                        @click="toggleLike()"
+                        jrx-optimistic-class="is-liked">
+                    {{#if liked}}\u2764\uFE0F{{else}}\uD83E\uDD0D{{/if}} ({{likesCount}})
+                </button>
+
+                <!-- Pattern 2: Hide on delete -->
+                {{#each tasks as task}}
+                    <div class="task-row">
+                        <span>{{task}}</span>
+                        <button @click="deleteTask(task)" jrx-optimistic-hide=".task-row">
+                            Delete
+                        </button>
+                    </div>
+                {{/each}}
+
+                <!-- Pattern 3: Inline state mutation -->
+                <p>Cart: {{items}} items | ${{total}}</p>
+                <button @click="buyItem()" data-optimistic="items:+1; total:+150.50">
+                    Buy ($150.50)
+                </button>
+
+                <!-- Pattern 4: Rollback test -->
+                <button @click="bombAction()"
+                        jrx-optimistic-class="is-loading"
+                        data-optimistic="likesCount:+1000">
+                    Dangerous action
+                </button>
+
+            </div>
+        """;
+    }
+}
+```
+
+## How `@Client` enables delta updates
+
+The `@Client` annotation on a component tells `jreactive-apt` to generate a client-side JavaScript renderer. When a `@Call` returns, JReactive pushes only the changed state fields (a delta) over WebSocket rather than the full rendered HTML. The client-side renderer applies the delta to the live DOM using the pre-compiled template from `window.JRX_RENDERERS`.
+
+This delta mechanism is what makes optimistic UI rollback smooth — the server sends back a delta with the corrected field values and the client reconciles them against whatever optimistic snapshot it applied.
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client  // enables client-side delta rendering
+public class SignupPage extends AppPage { ... }
+```
+
+<Note>
+Optimistic UI works without `@Client`, but rollback will cause a full server-rendered HTML swap instead of a smooth field-level delta. For the best user experience, pair optimistic actions with `@Client`.
+</Note>
+
+## Summary of attributes
+
+| Attribute | Effect | Rolls back on error? |
+|---|---|---|
+| `data-optimistic="field:expr; ..."` | Mutates client state fields immediately | Yes |
+| `jrx-optimistic-class="className"` | Adds a CSS class while request is in flight | Yes (class removed) |
+| `jrx-optimistic-hide=".selector"` | Hides the matching ancestor element | Yes (element reappears) |

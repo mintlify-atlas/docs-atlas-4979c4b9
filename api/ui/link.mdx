@@ -1,0 +1,93 @@
+---
+title: Link
+description: A client-side navigation link component that uses the JReactive router to navigate without a full page reload.
+---
+
+## Overview
+
+`Link` renders an `<a>` element with a `data-router` attribute. The JReactive client-side router intercepts clicks on elements with `data-router` and performs a push-state navigation, loading the target route's component tree without a full browser reload.
+
+An optional `onClick` binding allows a `@Call` method to run on the server before (or instead of) navigating.
+
+## Properties
+
+<ParamField path="href" type="string"  default="(empty)">
+  `@Bind` — The destination URL. Should be a route path registered with `@Route`, e.g. `"/clients"` or `"/dashboard"`.
+</ParamField>
+
+<ParamField path="text" type="string"  default="(empty)">
+  `@Bind` — The visible link text.
+</ParamField>
+
+<ParamField path="onClick" type="string"  default="(empty)">
+  `@Bind` — An optional `@Call` expression invoked on click before the router navigates. Leave empty to navigate without a server call.
+</ParamField>
+
+## Template output
+
+```html template
+<a data-router href="{{href}}" @click="{{onClick}}">
+  {{text}}
+</a>
+```
+
+The `data-router` attribute is always present and signals the JReactive client router to intercept the click event and use the History API instead of a full page navigation.
+
+## Usage example
+
+### Simple navigation link
+
+```html template
+<Link href="/dashboard" text="Go to dashboard" />
+```
+
+### Link with server-side click handler
+
+```html template
+<Link
+  href="/clients"
+  text="View clients"
+  onClick="trackNavigation()"
+/>
+```
+
+### Inline nav bar
+
+```html template
+<nav style="display: flex; gap: 16px;">
+  <Link href="/dashboard" text="Dashboard" />
+  <Link href="/clients"   text="Clients" />
+  <Link href="/settings"  text="Settings" />
+</nav>
+```
+
+## Java integration example
+
+```java AppLayout.java
+public class AppLayout extends HtmlComponent {
+
+    @Bind public String currentUser = "";
+
+    @Override
+    protected String template() {
+        return """
+            <header style="display: flex; justify-content: space-between; padding: 16px;">
+              <nav style="display: flex; gap: 16px;">
+                <Link href="/dashboard" text="Dashboard" />
+                <Link href="/clients"   text="Clients" />
+                <Link href="/reports"   text="Reports" />
+              </nav>
+              <span>{{currentUser}}</span>
+            </header>
+        """;
+    }
+}
+```
+
+<Note>
+All `<a>` elements with `data-router` are handled by the JReactive router. If you need a standard full-page navigation link (e.g. to an external URL), use a plain `<a>` tag in your template instead of the `Link` component.
+</Note>
+
+<Tip>
+Use `Link` for all internal route navigation. This preserves the component state already loaded in the browser session and avoids unnecessary full-page server round-trips.
+</Tip>

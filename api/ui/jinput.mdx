@@ -1,0 +1,144 @@
+---
+title: JInput
+description: A labeled text input component with form field binding, validation markers, and optional event callbacks.
+---
+
+## Overview
+
+`JInput` renders a fully labelled `<input>` element wrapped in a `<div class="jrx-field">` container. It supports a required indicator, help text, and both `@input` and `@change` event handlers. The `field` prop binds the input's `name` attribute to a nested form object property so JReactive can deserialize the value server-side.
+
+## Properties
+
+<ParamField path="field" type="Type<String>"  default="(empty)">
+  The `name` attribute of the underlying `<input>`. Use dot notation to bind to a nested form object, e.g. `"form.email"`. JReactive reads this name when deserializing `@Call` arguments.
+</ParamField>
+
+<ParamField path="label" type="Type<String>"  default="(empty)">
+  The visible label text rendered above the input.
+</ParamField>
+
+<ParamField path="type" type="Type<String>" default="text">
+  The HTML input type: `text`, `email`, `password`, `number`, `tel`, etc.
+</ParamField>
+
+<ParamField path="placeholder" type="Type<String>"  default="(empty)">
+  Placeholder text shown inside the input when it is empty.
+</ParamField>
+
+<ParamField path="required" type="Type<Boolean>" default="false">
+  When `true`, appends a `*` marker next to the label.
+</ParamField>
+
+<ParamField path="disabled" type="Type<Boolean>" default="false">
+  When `true`, the input is rendered in a disabled state.
+</ParamField>
+
+<ParamField path="helpText" type="Type<String>"  default="(empty)">
+  Optional helper text rendered below the input as `<small class="jrx-help">`.
+</ParamField>
+
+<ParamField path="autocomplete" type="Type<String>"  default="(empty)">
+  Maps to the HTML `autocomplete` attribute, e.g. `"email"`, `"current-password"`.
+</ParamField>
+
+<ParamField path="onInput" type="string"  default="(empty)">
+  A `@Call` expression invoked on every keystroke via `@input`. Use for real-time validation, e.g. `"validate(form)"`.
+</ParamField>
+
+<ParamField path="onChange" type="string"  default="(empty)">
+  A `@Call` expression invoked when the input loses focus and its value has changed, via `@change`.
+</ParamField>
+
+## Template output
+
+```html template
+<div class="jrx-field">
+  <label>
+    <span class="jrx-label">
+      {{label}}
+      {{#if required}}
+        <span class="jrx-required">*</span>
+      {{/if}}
+    </span>
+
+    <input
+      type="{{type}}"
+      name="{{field}}"
+      placeholder="{{placeholder}}"
+      autocomplete="{{autocomplete}}"
+      @input="{{onInput}}"
+      @change="{{onChange}}"
+    />
+  </label>
+
+  {{#if helpText}}
+    <small class="jrx-help">{{helpText}}</small>
+  {{/if}}
+</div>
+```
+
+## Usage example
+
+```html template
+<JInput
+  label="Email address"
+  type="email"
+  :field="form.email"
+  placeholder="you@example.com"
+  autocomplete="email"
+  required="true"
+  helpText="We will never share your email."
+  onInput="validateForm(form)"
+/>
+```
+
+<Note>
+The `field` binding sets the `name` attribute on the rendered `<input>`, which is how JReactive maps submitted values back to your server-side DTO. Always use dot notation — `"form.fieldName"` — to target a nested object.
+</Note>
+
+## Java integration example
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    public static class SignupForm implements Serializable {
+        @NotBlank public String name;
+        @Email   public String email;
+        @Size(min = 8) public String password;
+    }
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        // validation failures never reach here
+        state.lastMessage = "Registered: " + form.name;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JInput
+              label="Full name"
+              :field="form.name"
+              required="true"
+              onInput="register(form)"
+            />
+            <JInput
+              label="Email"
+              type="email"
+              :field="form.email"
+              required="true"
+            />
+            <JInput
+              label="Password"
+              type="password"
+              :field="form.password"
+              required="true"
+              helpText="Minimum 8 characters."
+            />
+        """;
+    }
+}
+```

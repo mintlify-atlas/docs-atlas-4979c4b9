@@ -1,80 +1,235 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Build your first reactive JReactive component with Spring Boot in under 10 minutes."
 ---
 
-## Get started in three steps
+This guide walks you through creating a working counter component that increments in real time over WebSocket, using the same pattern as the JReactive demo application.
 
-Get your documentation site running locally and make your first customization.
+<Info>
+  **Prerequisites**: Java 21, Maven 3.8+, and a Spring Boot 3.2 project skeleton. You can generate one at [start.spring.io](https://start.spring.io) — select **Spring Web** as the only dependency.
+</Info>
 
-### Step 1: Set up your local environment
+<Steps>
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+<Step title="Add the JReactive starter dependency">
 
-### Step 2: Deploy your changes
+Open your project's `pom.xml` and add the JitPack repository and the Spring Boot starter:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```xml pom.xml
+<repositories>
+  <repository>
+    <id>jitpack.io</id>
+    <url>https://jitpack.io</url>
+  </repository>
+</repositories>
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+<dependencies>
+  <dependency>
+    <groupId>com.ciro</groupId>
+    <artifactId>jreactive-starter-spring</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+  </dependency>
+</dependencies>
+```
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+The starter pulls in `jreactive-core`, `jreactive-runtime-jvm`, and `jreactive-runtime-js` automatically, along with Spring Boot Web, WebSocket, and Validation starters.
 
-### Step 3: Go live
+<Note>
+  You also need to configure the annotation processor (`jreactive-apt`) in your Maven Compiler Plugin. See the [Installation](/installation) page for the full compiler plugin configuration.
+</Note>
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+</Step>
+
+<Step title="Create the base component">
+
+Create a base class that holds your state and declares the `@Call` methods. Keeping logic in an abstract base class lets you reuse it across multiple component variants.
+
+```java BaseCounter.java
+package com.example.myapp;
+
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.State;
+import com.ciro.jreactive.annotations.Call;
+
+public abstract class BaseCounter extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Call
+    public void reset() {
+        count = 0;
+    }
+}
+```
+
+`@State` marks `count` as reactive state. JReactive tracks it and pushes a DOM diff to the browser whenever its value changes after a `@Call` method returns.
+
+`@Call` marks a method as browser-invocable. JReactive makes it available to template event handlers. By default, `@Call` methods run synchronously (`sync = true`) and trigger a state sync after they complete.
+
+</Step>
+
+<Step title="Create the leaf component with a template">
+
+Create a concrete component that extends `BaseCounter` and provides the HTML template:
+
+```java CounterLeaf.java
+package com.example.myapp;
+
+import com.ciro.jreactive.annotations.Client;
+import com.ciro.jreactive.annotations.StatefulRam;
+
+@Client
+@StatefulRam
+public class CounterLeaf extends BaseCounter {
+
+    @Override
+    protected String template() {
+        return """
+            <div style="border: 2px dashed #666; padding: 10px; margin: 10px;">
+                <h3>Counter</h3>
+                <p>Count: <strong>{{count}}</strong></p>
+
+                <button @click="increment()">+1</button>
+                <button @click="reset()">Reset</button>
+            </div>
+        """;
+    }
+}
+```
+
+**Template syntax:**
+- `{{count}}` — interpolates the value of the `@State` field named `count`
+- `@click="increment()"` — binds the button's click event to the `@Call` method `increment()`
+
+**Annotations:**
+- `@Client` — this component renders on the client side after the initial page load (CSR mode), keeping server load low for interactive leaf nodes
+- `@StatefulRam` — state is stored in-process memory (Caffeine cache); suitable for development and single-instance deployments
+
+</Step>
+
+<Step title="Create the page and register a route">
+
+Create a page component that acts as the route root. It embeds `CounterLeaf` as a child component using its class name as an HTML tag:
+
+```java HomePage.java
+package com.example.myapp;
+
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.router.Route;
+
+@Route(path = "/")
+public class HomePage extends HtmlComponent {
+
+    @Override
+    protected String template() {
+        return """
+            <div class="page">
+                <h1>My First JReactive App</h1>
+                <CounterLeaf />
+            </div>
+        """;
+    }
+}
+```
+
+`@Route(path = "/")` maps this component to the root URL. JReactive's `RouteProvider` picks it up automatically when scanning the Spring context.
+
+Child components are referenced by their simple class name as self-closing tags: `<CounterLeaf />`.
+
+</Step>
+
+<Step title="Create the Spring Boot application entry point">
+
+If you don't already have one, create the standard Spring Boot application class:
+
+```java Application.java
+package com.example.myapp;
+
+import org.springframework.boot.SpringApplication;
+import org.springframework.boot.autoconfigure.SpringBootApplication;
+
+@SpringBootApplication
+public class Application {
+
+    public static void main(String[] args) {
+        SpringApplication.run(Application.class, args);
+    }
+}
+```
+
+JReactive's `JReactiveAutoConfiguration` registers itself automatically via Spring Boot's auto-configuration mechanism. You do not need to import any JReactive configuration class manually.
+
+</Step>
+
+<Step title="Configure the application">
+
+Create `src/main/resources/application.yml` with the minimal JReactive configuration:
+
+```yaml application.yml
+server:
+  port: 8080
+
+jreactive:
+  store:
+    type: ram
+  ws:
+    persistent-state: true
+    enabled-backpressure: true
+    max-queue: 1024
+    flush-interval-ms: 16
+```
+
+`store.type: ram` uses an in-process Caffeine cache for session state. See [Installation](/installation) for the full list of configuration properties including the Redis hybrid store.
+
+</Step>
+
+<Step title="Run the app">
+
+Build and run your project:
+
+```bash
+mvn spring-boot:run
+```
+
+Open [http://localhost:8080](http://localhost:8080) in your browser. You should see your `HomePage` rendered with the embedded `CounterLeaf`. Click the **+1** button — the counter updates in real time without a page reload.
+
+<Tip>
+  Open the browser's DevTools Network panel and filter by **WS**. You can watch the WebSocket frames carrying state diffs as you click the buttons.
+</Tip>
+
+</Step>
+
+</Steps>
+
+## What just happened?
+
+When you clicked **+1**:
+
+1. The browser runtime sent a `call` message over the WebSocket identifying the component ID and method name `increment`.
+2. JReactive located the `CounterLeaf` instance for your session, acquired its lock, and invoked `increment()`.
+3. `count` changed from `0` to `1`. JReactive detected the delta, re-rendered the component, and computed the HTML diff.
+4. The diff was sent back over the WebSocket as a patch message.
+5. The browser runtime applied the patch to the DOM — only the `<strong>` element containing the count was updated.
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Installation" icon="download" href="/installation">
+    Full Maven coordinates, annotation processor setup, and all configuration options.
+  </Card>
+  <Card title="Core concepts" icon="book" href="/concepts/components">
+    Deep dive into the component model, state management, and reactivity.
+  </Card>
+  <Card title="Spring Boot guide" icon="leaf" href="/guides/spring-boot-integration">
+    Layouts, route parameters, form handling, and Spring integration patterns.
+  </Card>
+  <Card title="Standalone server" icon="plug" href="/guides/standalone-server">
+    Use JReactive without Spring Boot via the Undertow-based `JReactiveServer`.
+  </Card>
 </CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>

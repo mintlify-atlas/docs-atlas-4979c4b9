@@ -1,0 +1,235 @@
+---
+title: "Components"
+description: "Learn how HtmlComponent works, the component lifecycle, the view hierarchy, child composition, and slots."
+---
+
+Every UI element in JReactive is a **component** — a Java class that owns its template, its state, and its lifecycle. The base class for all components is `HtmlComponent`.
+
+## The view hierarchy
+
+JReactive has a three-level class hierarchy:
+
+```
+ViewNode (interface)
+└── ViewLeaf (abstract)
+    └── HtmlComponent (abstract)   ← you extend this
+```
+
+| Class | Role |
+|---|---|
+| `ViewNode` | Minimal interface: one method, `render()` |
+| `ViewLeaf` | Adds identity (`getId()`/`setId()`) and bindings |
+| `HtmlComponent` | Adds lifecycle, state, child management, slots, and routing hooks |
+| `ViewComposite` | Utility for composing multiple `ViewNode` objects into one render pass |
+
+You always extend `HtmlComponent` directly.
+
+## Defining a component
+
+Create a class that extends `HtmlComponent` and override `template()` to return your HTML:
+
+```java title="HelloLeaf.java"
+public class HelloLeaf extends HtmlComponent {
+
+    @State
+    public String newFruit = "";
+
+    @Override
+    protected String template() {
+        return """
+          <div class="page">
+            <input name="newFruit" placeholder="Nueva fruta">
+            <button @click="addFruit(newFruit)">Añadir</button>
+          </div>
+          """;
+    }
+}
+```
+
+Alternatively, place an HTML file named `ClassName.html` next to the `.java` file. JReactive loads it automatically at startup — no annotation needed:
+
+```html title="ExternalHtmlPage.html"
+<div style="padding: 40px;">
+    <h2>Clicks: <span>{{clicks}}</span></h2>
+    <button @click="interact()">Probar</button>
+    <a data-router href="/">Volver</a>
+</div>
+```
+
+<Tip>
+Using an external `.html` file keeps Java code clean and enables syntax highlighting in your editor.
+</Tip>
+
+## Component lifecycle
+
+JReactive calls lifecycle hooks in this order:
+
+<Steps>
+  <Step title="onInit()">
+    Called once, before the first render. Use it to set up initial state, load data, or configure child components. It is **not** called again if the component is recycled.
+
+    ```java title="UserPage.java"
+    @Override
+    protected void onInit() {
+        if ("10".equals(userId)) {
+            this.name.set("Ciro (Admin)");
+        } else {
+            this.name.set("Visitante " + userId);
+        }
+    }
+    ```
+  </Step>
+  <Step title="render()">
+    Evaluates `template()` against the current bindings and produces HTML. JReactive caches the result; the cache is invalidated automatically when reactive fields change.
+  </Step>
+  <Step title="onMount()">
+    Called when the component enters the live WebSocket session. Use it to start timers, subscribe to events, or open external connections.
+
+    ```java title="ClockLeaf.java"
+    @Override
+    protected void onMount() {
+        timer = new java.util.Timer(true);
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override public void run() {
+                clock.set(LocalTime.now().withNano(0).toString());
+            }
+        }, 1000, 1000);
+    }
+    ```
+  </Step>
+  <Step title="onUnmount()">
+    Called when the component leaves the session (navigation, tab close, server restart). Release all resources here.
+
+    ```java title="ClockLeaf.java"
+    @Override
+    protected void onUnmount() {
+        if (timer != null) {
+            timer.cancel();
+            timer = null;
+        }
+    }
+    ```
+  </Step>
+</Steps>
+
+<Note>
+`onInit()` runs before `onMount()`. If the component is persisted to Redis and revived on a new server instance, `onInit()` is **not** called again — only `onMount()` is.
+</Note>
+
+## Child component composition
+
+You can embed other components inside a template using `<ComponentName />` syntax. The tag must start with an uppercase letter.
+
+```java title="HomePage.java"
+@Override
+protected String template() {
+    return """
+      <div class="page">
+        <HelloLeaf />
+        <ClockLeaf />
+        <CounterLeaf />
+        <ColorBox />
+      </div>
+      """;
+}
+```
+
+JReactive automatically instantiates, mounts, and renders each child component. Children are recycled across renders for performance — an existing instance is reused when possible rather than destroyed and recreated.
+
+### Passing props to children
+
+Use `:propName="expression"` to pass a value from the parent's bindings into a child's `@Bind` field:
+
+```html title="HomePage template"
+<HelloLeaf ref="hello"/>
+<ClockLeaf ref="reloj" :greet="hello.newFruit" />
+```
+
+Here the `greet` field on `ClockLeaf` receives the current value of `newFruit` from the `hello` instance.
+
+## The `ref` attribute
+
+Assign a `ref` to a child to access its instance from Java. Use `findChild(ref, Type.class)` to retrieve it:
+
+```html title="parent template"
+<HelloLeaf ref="hello" />
+<ClockLeaf ref="reloj" :greet="hello.newFruit" />
+```
+
+```java title="Parent component"
+HelloLeaf helloLeaf = findChild("hello", HelloLeaf.class);
+```
+
+Refs are automatically scoped to the owning component, so the same short name can be reused in different components without collision.
+
+## Slots
+
+Slots let a parent inject HTML content into a child's template.
+
+### Default slot
+
+In the child's template, place `<slot />` where the injected content should appear:
+
+```html title="MainLayout.java (template)"
+<main id="app">
+    <slot />
+</main>
+```
+
+The router fills the default slot with the current page's rendered HTML automatically.
+
+### Named slots
+
+Define a named slot with `<slot name="footer" />`. Pass content to it from the parent by wrapping it in a `<template slot="footer">` element (or equivalent markup).
+
+Inside Java you can access slot content programmatically:
+
+```java
+// default slot
+String content = slot();
+
+// named slot
+String sidebar = slot("sidebar");
+```
+
+## Abstract base components
+
+You can use abstract classes to share state and methods across multiple components:
+
+```java title="BaseCounter.java"
+public abstract class BaseCounter extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Call
+    public void reset() {
+        count = 0;
+    }
+}
+```
+
+```java title="CounterLeaf.java"
+@Client
+@StatefulRam
+public class CounterLeaf extends BaseCounter {
+
+    @Override
+    protected String template() {
+        return """
+            <div>
+                <p>Contador: <strong>{{count}}</strong></p>
+                <button @click="increment()">+1</button>
+                <button @click="reset()">Reset</button>
+            </div>
+        """;
+    }
+}
+```
+
+The child class inherits all `@State`, `@Bind`, and `@Call` members from the parent.

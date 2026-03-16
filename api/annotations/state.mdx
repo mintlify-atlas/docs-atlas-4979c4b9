@@ -1,0 +1,92 @@
+---
+title: "@State"
+description: "Marks a field as server-managed state. Changes to the field are pushed to the browser as DOM updates when updateState() is called."
+---
+
+`@State` marks a field as a state root that is exposed to the template engine and synchronized with the browser. Unlike `@Bind`, which is designed for scalar values and two-way input binding, `@State` is typically used with POJOs and collections. JReactive wraps collections automatically in smart container types that track mutations.
+
+## Target
+
+`FIELD`
+
+## Attributes
+
+<ParamField path="value" type="string"  default="(empty)">
+  The logical name exposed in the template. If empty, the Java field name is used.
+</ParamField>
+
+## Smart collection wrapping
+
+When a `@State` field holds a standard Java collection, JReactive replaces it at initialization time with a smart wrapper that intercepts mutations and schedules DOM patches automatically:
+
+| Java type | Wrapped as |
+|-----------|------------|
+| `List<T>` | `SmartList<T>` |
+| `Map<K,V>` | `SmartMap<K,V>` |
+| `Set<T>` | `SmartSet<T>` |
+
+Mutations on these smart wrappers (`.add()`, `.remove()`, `.put()`, etc.) trigger incremental DOM updates without requiring an explicit `updateState()` call.
+
+## Usage
+
+### Primitive state
+
+```java BaseCounter.java
+public abstract class BaseCounter extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+        // @Call triggers updateState automatically after the method returns
+    }
+
+    @Call
+    public void reset() {
+        count = 0;
+    }
+}
+```
+
+### POJO state
+
+Group related state into an inner class and annotate the field with `@State`. This keeps the template namespace clean (e.g., `{{state.lastMessage}}`) and makes serialization straightforward.
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    public static class PageState implements Serializable {
+        public String lastMessage;
+    }
+
+    @State
+    PageState state = new PageState();
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        state.lastMessage = "User " + form.name + " registered successfully";
+        updateState("state"); // pushes the new state to the front end
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <p data-if="state.lastMessage">
+              {{state.lastMessage}}
+            </p>
+        """;
+    }
+}
+```
+
+## Notes
+
+- Call `updateState("fieldName")` after mutating a `@State` POJO field to push the updated state to the browser. Methods annotated with `@Call` have this done automatically.
+- Smart-wrapped collections push updates on every mutation, so `updateState()` is not needed for collection operations.
+- The template accesses nested POJO properties using dot notation: `{{state.lastMessage}}`.
+- When combined with `@Stateful`, `@State` fields must be `Serializable` (or contain only serializable types) so the component can be persisted to the state store.

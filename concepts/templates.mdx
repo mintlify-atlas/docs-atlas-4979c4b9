@@ -1,0 +1,284 @@
+---
+title: "Templates"
+description: "Complete reference for JReactive's template syntax: interpolation, conditionals, loops, event binding, form binding, child components, and slots."
+---
+
+JReactive templates are plain HTML strings enriched with a small set of directives. The template engine (backed by `JrxLexer` + `JrxParser`) processes them in a single O(N) pass before any rendering occurs.
+
+## Variable interpolation
+
+Wrap a field name (or dot-path expression) in double curly braces to output its value:
+
+```html
+<p>Contador: <strong>{{count}}</strong></p>
+<h2>User {{name}}</h2>
+<p>ID: {{userId}}</p>
+```
+
+You can traverse object graphs with dot notation:
+
+```html
+<p>{{state.lastMessage}}</p>
+<div>Total: {{items.size}}</div>
+```
+
+Fields annotated with `@Bind` or `@State` are automatically available. The binding key defaults to the Java field name; override it with the annotation's `value` attribute.
+
+## Conditionals — `{{#if}}` / `{{#else}}` / `{{/if}}`
+
+Use `{{#if condition}}` to conditionally render a block. The condition must be the name of a `boolean` (or `Boolean`) field visible in the component's bindings:
+
+```html title="HelloLeaf template"
+{{#if showHello}}
+  <ul>
+    {{#each fruits as fruit}}
+      <li>{{fruit}}</li>
+    {{/each}}
+  </ul>
+{{/if}}
+```
+
+Prefix the condition with `!` to negate:
+
+```html
+{{#if !isLoggedIn}}
+  <a href="/login" data-router>Sign in</a>
+{{/if}}
+```
+
+Add an `{{else}}` branch:
+
+```html
+{{#if isAdmin}}
+  <button @click="deleteAll()">Delete all</button>
+{{else}}
+  <p>Read-only access</p>
+{{/if}}
+```
+
+<Note>
+Blocks must be properly nested. Closing a `{{/if}}` before a nested HTML element is closed, or vice-versa, throws an `IllegalStateException` at parse time.
+</Note>
+
+## Loops — `{{#each}}` / `{{/each}}`
+
+Iterate over a `List`, `SmartList`, or any `Collection` field:
+
+```html title="NewStateTestPage template"
+<ul>
+  {{#each items as it}}
+    <li>{{it}}</li>
+  {{/each}}
+</ul>
+```
+
+The `as alias` clause introduces a loop variable. Inside the block, `{{alias}}` resolves to the current element. Omitting `as alias` defaults the variable to `this`:
+
+```html
+{{#each fruits}}
+  <li>{{this}}</li>
+{{/each}}
+```
+
+For objects with fields, use dot notation on the alias:
+
+```html
+{{#each users as user}}
+  <tr>
+    <td>{{user.name}}</td>
+    <td>{{user.email}}</td>
+  </tr>
+{{/each}}
+```
+
+## Event binding — @click and @input
+
+Bind browser events to `@Call` methods using the `@eventName` attribute syntax.
+
+### @click
+
+```html title="BaseCounter template"
+<button @click="increment()">+1</button>
+<button @click="reset()">Reset</button>
+```
+
+You can pass arguments — including values from other `@State` or `@Bind` fields:
+
+```html title="HelloLeaf template"
+<button @click="addFruit(newFruit)">Añadir</button>
+```
+
+```html title="NewStateTestPage template"
+<button @click="addItem(newItem)">Agregar</button>
+<button @click="resetList()">Limpiar</button>
+<button @click="changeTitle(newItem)">Cambiar título</button>
+```
+
+### @input
+
+Fires on every keypress / value change, useful for real-time validation:
+
+```html title="SignupPage template"
+<input type="text"  @input="validar(form)" name="form.name">
+<input type="email" @input="validar(form)" name="form.email">
+```
+
+### @Call target methods
+
+The method must be annotated with `@Call` and declared in the component class:
+
+```java title="BaseCounter.java"
+@Call
+public void increment() {
+    count++;
+}
+
+@Call
+public void reset() {
+    count = 0;
+}
+```
+
+<Tip>
+`@Call(sync = true)` (the default) executes the method synchronously within the component's lock. Set `sync = false` for fire-and-forget background tasks.
+</Tip>
+
+## Form field binding — name=""
+
+The `name` attribute on an `<input>`, `<select>`, or `<textarea>` binds the element's value to a component field. Changes are sent to the server whenever the user modifies the field.
+
+```html title="ClockLeaf template"
+<input name="greet" placeholder="Type greeting">
+```
+
+For nested objects, use dot notation to reach into a POJO:
+
+```html title="SignupPage template"
+<input type="text"      name="form.name">
+<input type="email"     name="form.email">
+<input type="password"  name="form.password">
+```
+
+Checkboxes bind to `boolean` fields:
+
+```html title="HelloLeaf template"
+<input type="checkbox" name="showHello">
+```
+
+<Note>
+The `name` binding respects `@Bind(readOnly = true)`. If the backing field is read-only, the incoming browser value is silently discarded.
+</Note>
+
+## Property binding to child components — :propName
+
+Pass a value from the parent's bindings into a child component's `@Bind` field using `:propName="expression"`:
+
+```html title="HomePage template"
+<HelloLeaf ref="hello" />
+<ClockLeaf ref="reloj" :greet="hello.newFruit" />
+```
+
+Here `hello.newFruit` accesses the `newFruit` state field on the `hello` ref and passes it as the `greet` prop to `ClockLeaf`.
+
+## Child component embedding — \<ComponentName /\>
+
+Insert another component by using its class name as a self-closing tag (uppercase first letter required):
+
+```html title="HomePage template"
+<HelloLeaf />
+<ClockLeaf />
+<CounterLeaf />
+<ColorBox />
+```
+
+JReactive automatically instantiates, mounts, and renders each child, wiring up reactive subscriptions. Use `ref` to hold a named reference:
+
+```html
+<HelloLeaf ref="hello" />
+```
+
+## Slots — \<slot /\>
+
+Slots allow a parent to inject content into a child's template.
+
+### Default slot
+
+```html title="MainLayout template"
+<main id="app">
+    <slot />
+</main>
+```
+
+The router fills `<slot />` with the current page's rendered HTML.
+
+### Named slots
+
+Define named slots with `<slot name="..." />`:
+
+```html title="Card component template"
+<div class="card">
+    <div class="card-header">
+        <slot name="header" />
+    </div>
+    <div class="card-body">
+        <slot />
+    </div>
+</div>
+```
+
+In Java you read slot content via `slot()` (default) or `slot("name")`:
+
+```java
+protected String template() {
+    return "<div class='header'>" + slot("header") + "</div>"
+         + "<div class='body'>" + slot() + "</div>";
+}
+```
+
+## data-if attribute
+
+`data-if` is a lightweight conditional for showing/hiding a single element without a wrapping block. The element is rendered in the DOM but hidden when the expression is falsy:
+
+```html title="SignupPage template"
+<p data-if="state.lastMessage">
+  {{state.lastMessage}}
+</p>
+```
+
+This differs from `{{#if}}` in that the element is always present in the HTML and toggled by the browser, whereas `{{#if}}` completely removes the content from the server-rendered output.
+
+## data-router attribute
+
+Mark any anchor tag with `data-router` to enable SPA navigation — the JReactive runtime intercepts the click and performs an in-place page swap over the WebSocket:
+
+```html title="MainLayout template"
+<a href="/" data-router>Inicio</a>
+<a href="/users/10" data-router>Perfil</a>
+<a href="/store-test" data-router>Store</a>
+```
+
+```html title="ExternalHtmlPage.html"
+<a data-router href="/">Volver al inicio</a>
+```
+
+## Template syntax quick reference
+
+| Syntax | Purpose |
+|---|---|
+| `{{field}}` | Output field value |
+| `{{obj.field}}` | Output nested field |
+| `{{#if cond}}...{{/if}}` | Conditional block |
+| `{{#if !cond}}...{{/if}}` | Negated conditional |
+| `{{#if cond}}...{{else}}...{{/if}}` | If / else block |
+| `{{#each list as item}}...{{/each}}` | Iteration |
+| `@click="method(arg)"` | Click event handler |
+| `@input="method(arg)"` | Input event handler |
+| `name="field"` | Two-way input binding |
+| `name="obj.field"` | Nested two-way binding |
+| `:prop="expr"` | Pass prop to child component |
+| `<ComponentName />` | Embed child component |
+| `<ComponentName ref="name" />` | Embed and name a child |
+| `<slot />` | Default slot outlet |
+| `<slot name="x" />` | Named slot outlet |
+| `data-if="field"` | Show/hide element |
+| `data-router` | SPA navigation link |

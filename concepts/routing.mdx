@@ -1,0 +1,181 @@
+---
+title: "Routing"
+description: "How to define routes with @Route, extract path and query parameters, wrap pages in layouts, navigate with data-router, and implement custom RouteProviders."
+---
+
+JReactive's router maps URL paths to `HtmlComponent` classes. Routing is annotation-driven — no XML or configuration files required.
+
+## @Route
+
+Annotate a component class with `@Route(path = "/...")` to register it as a page:
+
+```java title="HomePage.java"
+@Route(path = "/")
+public class HomePage extends AppPage {
+    ...
+}
+```
+
+```java title="SignupPage.java"
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+    ...
+}
+```
+
+The path must start with `/`. Spring Boot (or your chosen server integration) scans the classpath for all `@Route`-annotated classes and registers them at startup.
+
+## Path parameters with @Param
+
+Define dynamic segments in the path with `{placeholder}` syntax, then bind them to fields using `@Param`:
+
+```java title="UserPage.java"
+@Route(path = "/users/{id}")
+public class UserPage extends AppPage {
+
+    @Param("id")
+    @Bind String userId;
+
+    @Override
+    protected void onInit() {
+        if ("10".equals(userId)) {
+            this.name.set("Ciro (Admin)");
+        } else {
+            this.name.set("Visitante " + userId);
+        }
+    }
+}
+```
+
+When a request arrives for `/users/42`, JReactive sets `userId = "42"` before `onInit()` is called.
+
+### Supported field types for @Param
+
+| Java type | Conversion |
+|---|---|
+| `String` | Direct assignment |
+| `int` / `Integer` | `Integer.parseInt()` |
+| `long` / `Long` | `Long.parseLong()` |
+| `boolean` / `Boolean` | `Boolean.parseBoolean()` |
+| `ReactiveVar<T>` | `rv.set(rawString)` |
+| `Type<T>` | `tp.set(rawString)` |
+| Any type with `String` constructor | Reflected constructor call |
+
+## Query parameters with @UrlParam
+
+Bind query-string parameters (e.g., `?search=foo`) with `@UrlParam`:
+
+```java
+@Route(path = "/products")
+public class ProductsPage extends AppPage {
+
+    @UrlParam
+    @State String search = "";
+
+    @UrlParam("page")
+    @State int currentPage = 1;
+}
+```
+
+If the annotation's `value` is empty, the field name is used as the query parameter name. A request for `/products?search=java&page=2` sets `search = "java"` and `currentPage = 2`.
+
+<Note>
+`@UrlParam` works on any field type that `@Param` supports. The same type conversion rules apply.
+</Note>
+
+## @Layout — wrapping pages in a shell
+
+Use `@Layout` to specify a wrapper component that provides the outer HTML shell (doctype, head, nav, footer) for a page:
+
+```java
+@Route(path = "/")
+@Layout(MainLayout.class)
+public class HomePage extends AppPage {
+    ...
+}
+```
+
+The layout component must contain a `<slot />` where the page content will be injected:
+
+```java title="MainLayout.java"
+public class MainLayout extends HtmlComponent {
+
+    @Override
+    protected String template() {
+        return """
+            <!DOCTYPE html>
+            <html lang="es">
+            <head>
+                <title>JReactive App</title>
+            </head>
+            <body>
+                <nav>
+                    <a href="/" data-router>Inicio</a>
+                    <a href="/users/10" data-router>Perfil</a>
+                </nav>
+
+                <main id="app">
+                    <slot />
+                </main>
+
+                <footer>Hecho con Java</footer>
+
+                <script src="/js/jreactive-runtime.js"></script>
+            </body>
+            </html>
+        """;
+    }
+}
+```
+
+`@Layout` is `@Inherited`, so a base class can declare the layout once and all subclasses inherit it automatically.
+
+## Client-side navigation with data-router
+
+For SPA-style navigation (no full page reload), add the `data-router` attribute to any anchor tag:
+
+```html title="HomePage template"
+<a href="/" data-router>Inicio</a>
+<a href="/users/10" data-router>Perfil</a>
+<a href="/signup" data-router>Ir a signup</a>
+<a href="/store-test" data-router>Store</a>
+```
+
+When the user clicks a `data-router` link, the JReactive JavaScript runtime intercepts the click, requests the new page over WebSocket, and swaps only the `<main id="app">` content using Idiomorph — keeping the layout, scripts, and WebSocket connection alive.
+
+<Tip>
+Links without `data-router` perform a normal full-page HTTP navigation. Use `data-router` for all in-app links and omit it for external URLs or intentional hard navigations.
+</Tip>
+
+## RouteProvider SPI
+
+For advanced use cases — multi-tenant routing, dynamic route registries, database-driven slugs — implement the `RouteProvider` SPI:
+
+```java title="RouteProvider.java"
+public interface RouteProvider {
+    Result resolve(String path);
+
+    record Result(HtmlComponent component, Map<String, String> params) {}
+}
+```
+
+Register your implementation via Java's `ServiceLoader` mechanism or your framework's DI container. The router calls `resolve(path)` and uses the returned component and extracted params directly.
+
+```java
+public class MyRouteProvider implements RouteProvider {
+
+    @Override
+    public Result resolve(String path) {
+        if (path.startsWith("/blog/")) {
+            String slug = path.substring(6);
+            BlogPost page = new BlogPost();
+            return new Result(page, Map.of("slug", slug));
+        }
+        return null; // fall through to annotation-based routing
+    }
+}
+```
+
+Return `null` to let the default annotation-based router handle the path.

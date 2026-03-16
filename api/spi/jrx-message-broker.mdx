@@ -1,0 +1,139 @@
+---
+title: JrxMessageBroker
+description: A pub/sub SPI for cross-JVM state delivery. Required in multi-instance deployments so that state changes on one node are forwarded to the correct WebSocket connection on another node.
+---
+
+`JrxMessageBroker` decouples state-change publishing from WebSocket delivery in clustered deployments. When a `@Stateful` component mutates state on JVM node A, but the client's WebSocket connection is open on JVM node B, the broker forwards the serialized state patch from A to B over an external message bus (Redis Pub/Sub by default).
+
+<Info>You only need a `JrxMessageBroker` if you run JReactive on more than one JVM instance. Single-node deployments deliver state patches directly over the in-process WebSocket handler without any broker.</Info>
+
+## Interface
+
+```java JrxMessageBroker.java
+public interface JrxMessageBroker {
+    void publish(String sessionId, String message);
+    void onMessage(BiConsumer<String, String> handler);
+}
+```
+
+---
+
+## Methods
+
+### `publish(String sessionId, String message)`
+
+Publishes a serialized state-patch message for a specific session. The broker is responsible for routing the message to whichever node holds the matching WebSocket connection.
+
+<ParamField path="sessionId" type="String" required>
+  The session identifier of the target client. This matches the ID from `JrxSession.getId()` and the key used in `StateStore`.
+</ParamField>
+
+<ParamField path="message" type="String" required>
+  The JSON payload to deliver. In practice this is a serialized batch of state diffs produced by the JReactive runtime.
+</ParamField>
+
+```java
+broker.publish("session-abc123", "{\"type\":\"patch\",\"data\":{\"count\":5}}");
+```
+
+---
+
+### `onMessage(BiConsumer<String, String> handler)`
+
+Registers a global callback that the broker calls when a message arrives for any session on this node. The runtime uses this to receive patches published by other nodes and deliver them to the local WebSocket connections.
+
+<ParamField path="handler" type="BiConsumer<String, String>" required>
+  A callback invoked with `(sessionId, messagePayload)` for each incoming message. Called on the broker's internal listener thread.
+</ParamField>
+
+```java
+broker.onMessage((sessionId, payload) -> {
+    // Find the local WebSocket for this session and push the payload
+    JrxSession localSession = sessionRegistry.find(sessionId);
+    if (localSession != null && localSession.isOpen()) {
+        localSession.sendText(payload);
+    }
+});
+```
+
+---
+
+## RedisMessageBroker
+
+`RedisMessageBroker` implements `JrxMessageBroker` using Redis Pub/Sub with pattern subscriptions (`jrx:upd:*`). It ships in the `jreactive-store-redis` module.
+
+```java RedisMessageBroker.java
+public RedisMessageBroker(String host, int port) {
+    this.pool = new JedisPool(host, port);
+    this.serverId = UUID.randomUUID().toString();
+    startListener();
+}
+```
+
+### Echo prevention
+
+Each `RedisMessageBroker` instance assigns itself a random UUID at startup (`serverId`). Every published message is prefixed with `serverId + "|"`. When a message arrives on the listener thread, the broker checks whether the sender ID matches its own and discards it if so. This prevents a node from processing its own state patches twice.
+
+```java RedisMessageBroker.java
+// publish() signs the message:
+String envelope = serverId + "|" + message;
+jedis.publish(CHANNEL_PREFIX + sessionId, envelope);
+
+// Listener strips and checks the sender ID:
+String senderId = message.substring(0, sep);
+if (serverId.equals(senderId)) return; // echo — ignore
+```
+
+### Channel naming
+
+| Pattern | Meaning |
+|---|---|
+| `jrx:upd:{sessionId}` | Channel for a specific client session |
+| `jrx:upd:*` | Pattern used by the subscriber to receive all session channels |
+
+---
+
+## When to use
+
+| Deployment | StateStore | JrxMessageBroker |
+|---|---|---|
+| Single JVM | `CaffeineStateStore` | Not needed |
+| Multiple JVMs, sticky sessions | `RedisStateStore` | Not needed (traffic always routes to same node) |
+| Multiple JVMs, no sticky sessions | `RedisStateStore` | Required (`RedisMessageBroker`) |
+
+<Warning>If you deploy multiple JVM instances without sticky sessions and without a `JrxMessageBroker`, clients will receive state updates only if their WebSocket connection happens to be on the same node that processed the state mutation. All other clients will see stale state.</Warning>
+
+---
+
+## Registering a custom broker
+
+Declare a Spring `@Bean` of type `JrxMessageBroker`:
+
+```java JReactiveConfig.java
+@Configuration
+public class JReactiveConfig {
+
+    @Bean
+    public JrxMessageBroker messageBroker() {
+        return new RedisMessageBroker("redis-host", 6379);
+    }
+}
+```
+
+Implement the interface directly to integrate with any other pub/sub system (Kafka, NATS, etc.):
+
+```java
+public class KafkaMessageBroker implements JrxMessageBroker {
+
+    @Override
+    public void publish(String sessionId, String message) {
+        kafkaProducer.send(new ProducerRecord<>("jrx-updates", sessionId, message));
+    }
+
+    @Override
+    public void onMessage(BiConsumer<String, String> handler) {
+        kafkaConsumer.subscribe(List.of("jrx-updates"));
+        // poll loop that calls handler.accept(sessionId, payload)
+    }
+}
+```

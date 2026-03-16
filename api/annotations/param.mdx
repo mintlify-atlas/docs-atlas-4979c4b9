@@ -1,0 +1,73 @@
+---
+title: "@Param"
+description: "Injects a URL path parameter into a component field. Used with @Route paths that contain {placeholder} segments."
+---
+
+`@Param` binds a named path segment from the current URL to a component field. When the router matches a URL against a `@Route` path such as `/users/{id}`, the captured value for `id` is converted to the field's type and injected before `onInit()` runs.
+
+## Target
+
+`FIELD`, `PARAMETER`
+
+## Attributes
+
+<ParamField path="value" type="string" required>
+  The name of the placeholder in the `@Route` path. Must match the `{name}` segment exactly (case-sensitive).
+</ParamField>
+
+## Type conversion
+
+JReactive automatically converts the raw string path segment to the declared field type:
+
+| Field type | Conversion |
+|------------|------------|
+| `String` | No conversion — value used as-is |
+| `int` / `Integer` | `Integer.parseInt()` |
+| `long` / `Long` | `Long.parseLong()` |
+| `boolean` / `Boolean` | `Boolean.parseBoolean()` |
+| `ReactiveVar<T>` | Converted to `T`, then wrapped |
+| `Type<T>` | Converted to `T`, then wrapped with `$()` |
+
+## Usage
+
+```java UserPage.java
+import com.ciro.jreactive.router.Param;
+import com.ciro.jreactive.router.Route;
+import static com.ciro.jreactive.Type.$;
+
+@Route(path = "/users/{id}")
+public class UserPage extends AppPage {
+
+    @Param("id")
+    @Bind String userId;
+
+    @Bind public Type<String> name = $("");
+
+    @Override
+    protected void onInit() {
+        // userId is already populated with the matched path segment
+        if ("10".equals(userId)) {
+            this.name.set("Ciro (Admin)");
+        } else {
+            this.name.set("Visitor " + userId);
+        }
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <h2>User {{name}}</h2>
+            <p>ID: {{userId}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+## Notes
+
+- `@Param` fields are injected before `onInit()` is called, so you can safely use them inside `onInit()` to load data.
+- If the path segment cannot be converted to the declared type (e.g., the URL contains non-numeric text for an `int` field), JReactive throws a `ParamConversionException` and the component fails to render. Validate path inputs at the routing level or use `String` and convert manually.
+- `@Param` can be combined with `@Bind` (as in the example above) to expose the path parameter directly in the template.
+- The annotation also targets `PARAMETER`, enabling method-level injection in future API extensions, but the primary usage is on fields.

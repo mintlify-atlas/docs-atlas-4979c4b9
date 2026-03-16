@@ -1,0 +1,270 @@
+---
+title: "Installation"
+description: "Add JReactive to your project using the Spring Boot starter or the standalone Undertow server. Artifacts are published via JitPack."
+---
+
+<Info>
+  **Java 21 is required.** JReactive uses virtual threads (Java 21+) in production mode and relies on the Java compiler API (`jdk.compiler`) for the annotation processor.
+</Info>
+
+## JitPack repository
+
+JReactive artifacts are published through [JitPack](https://jitpack.io). Add the JitPack repository to your `pom.xml` before declaring any JReactive dependency:
+
+```xml pom.xml
+<repositories>
+  <repository>
+    <id>jitpack.io</id>
+    <url>https://jitpack.io</url>
+  </repository>
+</repositories>
+```
+
+JitPack builds JReactive from source using **OpenJDK 21** (`mvn clean install -DskipTests`), so the artifacts always match the repository's declared Java version.
+
+<Tabs>
+
+<Tab title="Spring Boot">
+
+### Spring Boot starter
+
+The `jreactive-starter-spring` module is the recommended way to use JReactive in a Spring Boot 3.2+ application. It transitively includes `jreactive-core`, `jreactive-runtime-jvm`, `jreactive-runtime-js`, and `jreactive-apt`.
+
+#### 1. Declare the dependency
+
+```xml pom.xml
+<dependency>
+  <groupId>com.ciro</groupId>
+  <artifactId>jreactive-starter-spring</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+#### 2. Configure the annotation processor
+
+JReactive uses a compile-time annotation processor (`jreactive-apt`) to generate `ComponentAccessor` classes for each of your components. These accessors provide scoped CSS injection and AOT rendering metadata. You must configure the Maven Compiler Plugin to run it:
+
+```xml pom.xml
+<build>
+  <plugins>
+    <plugin>
+      <groupId>org.apache.maven.plugins</groupId>
+      <artifactId>maven-compiler-plugin</artifactId>
+      <version>3.11.0</version>
+      <configuration>
+        <source>21</source>
+        <target>21</target>
+        <annotationProcessorPaths>
+          <path>
+            <groupId>com.ciro</groupId>
+            <artifactId>jreactive-apt</artifactId>
+            <version>0.0.1-SNAPSHOT</version>
+          </path>
+        </annotationProcessorPaths>
+        <fork>true</fork>
+        <compilerArgs>
+          <arg>--add-exports</arg>
+          <arg>jdk.compiler/com.sun.source.util=ALL-UNNAMED</arg>
+          <arg>--add-exports</arg>
+          <arg>jdk.compiler/com.sun.source.tree=ALL-UNNAMED</arg>
+          <arg>-parameters</arg>
+        </compilerArgs>
+      </configuration>
+    </plugin>
+  </plugins>
+</build>
+```
+
+<Warning>
+  Without the annotation processor, components still work but scoped CSS and AOT rendering optimizations are disabled. The `--add-exports` flags are required because the processor uses internal javac APIs to read source-level AST information.
+</Warning>
+
+#### 3. (Optional) Add the UI component library
+
+If you want to use built-in components like `JButton`, `JInput`, `JTable`, and `JModal`, add:
+
+```xml pom.xml
+<dependency>
+  <groupId>com.ciro</groupId>
+  <artifactId>jreactive-ui</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+#### 4. Configure application.yml
+
+Add the following to `src/main/resources/application.yml`:
+
+```yaml application.yml
+server:
+  port: 8080
+
+jreactive:
+  store:
+    type: ram          # Options: ram | hybrid (requires Redis)
+  ws:
+    persistent-state: true
+    enabled-backpressure: true
+    max-queue: 1024
+    flush-interval-ms: 16
+```
+
+#### Spring Boot auto-configuration
+
+When `jreactive-starter-spring` is on the classpath, `JReactiveAutoConfiguration` runs automatically. It registers the following beans:
+
+| Bean | Description |
+|------|-------------|
+| `StateStore` | Defaults to `CaffeineStateStore` (in-memory). Replaced automatically if you declare your own `StateStore` bean. |
+| `CallGuard` | Validates `@Call` method arguments using Jakarta Bean Validation. |
+| `PageResolver` | Maps incoming requests to the correct component instance via `RouteProvider`. |
+| `JrxHubManager` | Manages WebSocket sessions, routes call messages to components, and broadcasts state diffs. |
+
+</Tab>
+
+<Tab title="Standalone (Undertow)">
+
+### Standalone server
+
+Use `jreactive-standalone` if you want to run JReactive without Spring Boot. It embeds an [Undertow](https://undertow.io) HTTP/WebSocket server.
+
+#### 1. Declare the dependency
+
+```xml pom.xml
+<dependency>
+  <groupId>com.ciro</groupId>
+  <artifactId>jreactive-standalone</artifactId>
+  <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+#### 2. Configure the annotation processor
+
+The same `maven-compiler-plugin` configuration applies (see the Spring Boot tab). The annotation processor is framework-agnostic.
+
+#### 3. Create the server entry point
+
+```java Main.java
+package com.example.myapp;
+
+import com.ciro.jreactive.AstComponentEngine;
+import com.ciro.jreactive.standalone.JReactiveServer;
+
+public class Main {
+
+    public static void main(String[] args) {
+        AstComponentEngine.installAsDefault();
+
+        JReactiveServer server = new JReactiveServer(8080);
+        server.addRoute("/", MyHomePage::new);
+        server.start();
+    }
+}
+```
+
+`JReactiveServer` wires together the `PageResolver`, `JrxHubManager`, `CallGuard`, and Undertow handlers internally. Routes are registered with `addRoute(path, componentFactory)` where the factory is a `Supplier<HtmlComponent>`.
+
+#### 4. Write your component
+
+Components work identically in standalone mode. Use `@State`, `@Call`, and `template()` exactly as in the Spring Boot integration:
+
+```java MyHomePage.java
+package com.example.myapp;
+
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.State;
+import com.ciro.jreactive.annotations.Call;
+
+public class MyHomePage extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="font-family: system-ui, sans-serif; text-align: center; padding: 50px;">
+                <h1>JReactive Standalone</h1>
+                <p>Running on <strong>Undertow</strong> (no Spring Boot)</p>
+                <h2>Count: {{count}}</h2>
+                <button @click="increment()">Click me</button>
+            </div>
+        """;
+    }
+}
+```
+
+<Note>
+  In standalone mode, routes are registered programmatically via `server.addRoute()`. The `@Route` annotation is not scanned automatically — you must register routes manually.
+</Note>
+
+</Tab>
+
+</Tabs>
+
+## All available modules
+
+| Module | Group ID | Description |
+|--------|----------|-------------|
+| `jreactive-core` | `com.ciro` | Base classes and annotations. No runtime dependencies beyond `jetbrains-annotations`. |
+| `jreactive-apt` | `com.ciro` | Compile-time annotation processor. Declare with `provided` scope or as an `annotationProcessorPath`. |
+| `jreactive-runtime-jvm` | `com.ciro` | Server-side rendering engine and WebSocket message handling. |
+| `jreactive-runtime-js` | `com.ciro` | Browser-side runtime JS bundle, served automatically at `/js/jreactive-runtime.js`. |
+| `jreactive-starter-spring` | `com.ciro` | Spring Boot 3.2 auto-configuration. Includes core, runtime-jvm, and runtime-js. |
+| `jreactive-standalone` | `com.ciro` | Undertow-based standalone server. |
+| `jreactive-store-redis` | `com.ciro` | Redis state store for distributed/multi-instance deployments. |
+| `jreactive-ui` | `com.ciro` | Built-in component library (forms, tables, modals). |
+
+## Production configuration
+
+For production deployments, enable virtual threads and switch to the Redis hybrid store:
+
+```yaml application.yml
+# Activate with: java -jar app.jar --spring.profiles.active=prod
+spring:
+  config:
+    activate:
+      on-profile: prod
+  threads:
+    virtual:
+      enabled: true
+
+jreactive:
+  store:
+    type: hybrid
+    serialization: json    # Options: json | fst
+    consistency: strong    # Options: strong | eventual
+  redis:
+    host: localhost
+    port: 6379
+```
+
+**Store types:**
+- `ram` — In-process Caffeine cache. Fast, no external dependencies. State is lost on restart. Use for development.
+- `hybrid` — Writes to both in-process RAM and Redis. Survives restarts and enables horizontal scaling.
+
+**Serialization strategies (hybrid store only):**
+- `json` — Jackson-based. Human-readable in Redis, tolerant to class changes between deploys. Recommended default.
+- `fst` — Binary serialization. Faster and smaller payload, but fragile if you change class structure between deploys.
+
+**Consistency modes (hybrid store only):**
+- `strong` — Writes to Redis before confirming the operation. Safer; Redis is the source of truth.
+- `eventual` — Writes to RAM immediately, replicates to Redis asynchronously. Faster; small risk of data loss on JVM crash.
+
+<Tip>
+  Start with `ram` during development. Switch to `hybrid` with `serialization: json` and `consistency: strong` when deploying to production.
+</Tip>
+
+## Verifying the installation
+
+After starting your application, confirm JReactive is running correctly:
+
+1. Open `http://localhost:8080` — your root route component should render.
+2. Open browser DevTools → **Network** → filter by **WS** — you should see a WebSocket connection to `/ws`.
+3. Interact with a `@Call`-annotated button — watch the WebSocket frames in real time.
+4. In standalone mode, the runtime JS bundle is available at `http://localhost:8080/js/jreactive-runtime.js`.

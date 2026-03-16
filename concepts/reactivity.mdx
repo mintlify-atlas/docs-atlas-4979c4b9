@@ -1,0 +1,177 @@
+---
+title: "Reactivity"
+description: "How ReactiveVar drives DOM updates, how @Bind exposes values to templates, and how JReactive computes fine-grained deltas."
+---
+
+JReactive's reactivity is built around a single primitive: `ReactiveVar<T>`. Everything from `@Bind` fields to the Smart collections ultimately fires events through a `ReactiveVar`, which triggers a DOM delta for the changed field.
+
+## ReactiveVar\<T\>
+
+`ReactiveVar<T>` is a generic, thread-safe value container with listener support:
+
+```java title="ReactiveVar.java (source)"
+public final class ReactiveVar<T> implements java.io.Serializable {
+
+    public ReactiveVar(T initial) { ... }
+
+    public T get() { return value; }
+
+    public void set(T newValue) {
+        this.value = newValue;
+        // fires all listeners if the component is currently MOUNTED
+        for (Consumer<T> listener : listeners) {
+            listener.accept(newValue);
+        }
+    }
+
+    public Runnable onChange(Consumer<T> listener) {
+        listeners.add(listener);
+        return () -> listeners.remove(listener); // returns an unsubscribe handle
+    }
+}
+```
+
+### Creating a ReactiveVar
+
+The idiomatic way to create one is through the `Type<T>` record and its factory helper `$()`:
+
+```java title="ClockLeaf.java"
+import static com.ciro.jreactive.Type.$;
+
+public class ClockLeaf extends HtmlComponent {
+
+    @Bind public Type<String> greet = $("Hello");
+    @Bind public Type<String> clock = $("--:--:--");
+}
+```
+
+`Type.of(value)` and `$()` both create a `Type<T>` wrapping a new `ReactiveVar<T>` with the given initial value.
+
+### Getting and setting the value
+
+```java
+// Read
+String current = greet.get();
+
+// Write — triggers DOM update if the component is mounted
+greet.set("Good morning");
+```
+
+### Subscribing to changes
+
+```java
+Runnable unsubscribe = greet.onChange(newVal -> {
+    System.out.println("greet changed to: " + newVal);
+});
+
+// Later, to stop listening:
+unsubscribe.run();
+```
+
+Listeners are automatically cleared when a component unmounts (`onUnmount()`), so you do not need to unsubscribe manually for component-owned listeners.
+
+## @Bind — exposing fields to templates
+
+`@Bind` does two things:
+
+1. Registers the field in the component's binding map so the template engine can resolve `{{fieldName}}`.
+2. Wraps the field's value in a `ReactiveVar` so that any change to it triggers a targeted DOM update.
+
+```java title="ColorBox.java"
+public class ColorBox extends HtmlComponent {
+
+    @Bind String text = "¡Hazme Click!";
+}
+```
+
+If the field is already a `ReactiveVar<T>` or `Type<T>`, JReactive uses it directly. If it is a plain value, JReactive wraps it transparently.
+
+### readOnly
+
+Set `readOnly = true` to prevent the browser from updating the field via a form `name=` binding:
+
+```java
+@Bind(readOnly = true)
+String computedLabel = "read only";
+```
+
+## How state changes propagate
+
+<Steps>
+  <Step title="Mutation">
+    A `@Call` method (or a timer, WebSocket push, etc.) changes a `@State` field or calls `.set()` on a `ReactiveVar`.
+  </Step>
+  <Step title="Snapshot comparison">
+    After each `@Call` returns, the runtime compares the current field values against the pre-call snapshot. For primitives and Strings it uses `equals()`; for POJOs it computes a deep field hash. Smart collections (SmartList, SmartMap, SmartSet) report mutations as they happen, bypassing the snapshot.
+  </Step>
+  <Step title="Delta computation">
+    Only the fields that changed are included in the update payload (`_getStateDeltas()`). If nothing changed, no message is sent.
+  </Step>
+  <Step title="WebSocket push">
+    The delta is serialized to JSON and pushed to the browser over the WebSocket connection.
+  </Step>
+  <Step title="DOM patch">
+    The JReactive JavaScript runtime receives the delta and applies surgical DOM mutations using Idiomorph — only the affected nodes are updated.
+  </Step>
+</Steps>
+
+## The version / CAS mechanism
+
+Every `HtmlComponent` carries a `_version` counter:
+
+```java
+public long _getVersion() { return _version; }
+public void _setVersion(long v) { this._version = v; }
+```
+
+When a component is loaded from Redis (`@Stateful`), the runtime performs a compare-and-swap: if the version in Redis does not match the local version, the server's copy wins and the client is told to re-render. This prevents stale updates from overwriting newer state in a multi-node cluster.
+
+## Active guard
+
+`ReactiveVar` has an internal `activeGuard` — a `BooleanSupplier` that is checked before firing listeners:
+
+```java
+rx.setActiveGuard(() -> _state() == ComponentState.MOUNTED);
+```
+
+JReactive sets this guard for every binding when a component is mounted. When the component is unmounted, the guard returns `false`, so in-flight events on background threads (timers, async callbacks) silently drop rather than sending DOM updates to a disconnected client.
+
+## Delta updates for collections
+
+Smart collections emit per-operation events that map directly to minimal DOM patches:
+
+```java title="HelloLeaf.java"
+@State
+public List<String> fruits = new ArrayList<>();
+
+@Call
+public void addFruit(String fruta) {
+    fruits.add(fruta);   // SmartList fires ADD → single <li> appended in browser
+    newFruit = "";
+}
+```
+
+Without Smart collections, adding one item to a 1,000-item list would replace the entire `<ul>`. With Smart collections, only one `<li>` is inserted.
+
+## Type\<T\> convenience record
+
+`Type<T>` is a lightweight record that wraps a `ReactiveVar<T>` and re-exports `get()` and `set()`:
+
+```java title="Type.java"
+public record Type<T>(ReactiveVar<T> rx) {
+    public T get()            { return rx.get(); }
+    public void set(T value)  { rx.set(value);   }
+
+    public static <U> Type<U> of(U initial) { return new Type<>(new ReactiveVar<>(initial)); }
+    public static <U> Type<U> $(U initial)  { return Type.of(initial); }
+}
+```
+
+Use it when you want a named reactive field without the `@State` tracking overhead:
+
+```java
+@Bind public Type<String> clock = $("--:--:--");
+
+// update from a timer:
+clock.set(LocalTime.now().withNano(0).toString());
+```

@@ -1,0 +1,93 @@
+---
+title: "@Client"
+description: "Enables client-side rendering (CSR) mode. The component template is compiled at build time and executed in the browser by a generated JavaScript renderer."
+---
+
+`@Client` switches a component from server-side rendering to client-side rendering. At compile time, the `jreactive-apt` annotation processor reads the `template()` method and generates a JavaScript renderer class. At runtime, the server sends the component's state as JSON over the WebSocket, and the browser renders the DOM directly — no HTML is sent over the wire for subsequent updates.
+
+## Target
+
+`TYPE`
+
+## Usage
+
+### CSR counter with in-memory state
+
+`@Client` is almost always paired with `@StatefulRam` because the server still needs to store state between interactions, but there is no benefit to persisting it to Redis when rendering is happening in the browser.
+
+```java CounterLeaf.java
+import com.ciro.jreactive.annotations.Client;
+import com.ciro.jreactive.annotations.StatefulRam;
+
+@Client
+@StatefulRam
+public class CounterLeaf extends BaseCounter {
+
+    @Override
+    protected String template() {
+        return """
+            <div style="border: 2px dashed #666; padding: 10px; margin: 10px;">
+                <h3>Counter (CSR)</h3>
+                <p>Count: <strong>{{count}}</strong></p>
+                <button @click="increment()">+1</button>
+                <button @click="reset()">Reset</button>
+            </div>
+        """;
+    }
+}
+```
+
+### CSR page with form validation
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    @State
+    PageState state = new PageState();
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        state.lastMessage = "User " + form.name + " registered successfully";
+        updateState("state");
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <section>
+              <h1>Sign up</h1>
+              <input type="text" @input="validar(form)" name="form.name">
+              <input type="email" @input="validar(form)" name="form.email">
+              <input type="password" @input="validar(form)" name="form.password">
+              <button type="button" @click="register(form)">Register</button>
+              <p data-if="state.lastMessage">{{state.lastMessage}}</p>
+            </section>
+        """;
+    }
+}
+```
+
+## How it works
+
+<Steps>
+  <Step title="Compile-time code generation">
+    The `jreactive-apt` processor scans classes annotated with `@Client` and generates a JavaScript renderer (e.g., `CounterLeaf.js`) that mirrors the Java template logic.
+  </Step>
+  <Step title="Initial SSR hydration">
+    The first page load is still server-rendered. JReactive sends full HTML so the browser can paint immediately without waiting for JavaScript.
+  </Step>
+  <Step title="Subsequent updates via JSON">
+    After the WebSocket connection is established, state updates arrive as JSON deltas. The generated JS renderer patches the DOM in the browser without a server round-trip for HTML generation.
+  </Step>
+</Steps>
+
+## Notes
+
+- Requires `jreactive-apt` on the annotation processor classpath (Maven `annotationProcessorPaths` or Gradle `annotationProcessor` configuration).
+- The generated JavaScript file is placed in `src/main/resources/static/js/components/` by default. Commit this file to source control.
+- `@Client` does not bypass `@Call` — method invocations still travel over WebSocket to the server. Only the _rendering_ step moves to the browser.
+- Combine with `@StatefulRam` for the best performance profile: fast in-memory state on the server, zero HTML serialization overhead per update.
+- Do not use `@Client` with `@DomMode(SERVER_OWNED)` — the two modes are mutually exclusive.

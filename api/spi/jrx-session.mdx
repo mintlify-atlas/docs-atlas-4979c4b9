@@ -1,0 +1,120 @@
+---
+title: JrxSession
+description: The abstraction over a WebSocket (or HTTP) connection for a single browser session. Provides send, close, and attribute storage operations.
+---
+
+`JrxSession` represents the transport layer connection for one client session. The JReactive runtime implements this interface for each connected WebSocket client and passes the instance to the component lifecycle where needed.
+
+## Interface
+
+```java JrxSession.java
+public interface JrxSession {
+    String getId();
+    boolean isOpen();
+    void sendText(String json);
+    void close();
+    void setAttr(String key, Object val);
+    Object getAttr(String key);
+}
+```
+
+---
+
+## Methods
+
+### `getId()`
+
+Returns the unique identifier for this session. This is the same `sessionId` used as the key in `StateStore`.
+
+<ResponseField name="return" type="String">
+  A stable, unique string identifier for this connection (e.g., a UUID or HTTP session ID).
+</ResponseField>
+
+```java
+String sid = session.getId(); // e.g., "ws-a3f9bc12-..."
+```
+
+---
+
+### `isOpen()`
+
+Checks whether the underlying connection is still open and can receive messages.
+
+<ResponseField name="return" type="boolean">
+  `true` if the connection is active; `false` if the client has disconnected or the session was closed.
+</ResponseField>
+
+```java
+if (session.isOpen()) {
+    session.sendText(jsonPayload);
+}
+```
+
+---
+
+### `sendText(String json)`
+
+Sends a JSON string to the connected browser client over WebSocket. The JReactive runtime calls this method to deliver state update batches whenever reactive bindings change.
+
+<ParamField path="json" type="String" required>
+  A JSON-serialized message to send to the client. JReactive uses a specific envelope format for state diffs, but the interface accepts any string.
+</ParamField>
+
+```java
+session.sendText("{\"type\":\"patch\",\"data\":{\"count\":5}}");
+```
+
+---
+
+### `close()`
+
+Closes the underlying connection and triggers session cleanup. After calling `close()`, subsequent calls to `sendText()` will fail or be silently dropped depending on the implementation.
+
+```java
+session.close();
+```
+
+---
+
+### `setAttr(String key, Object val)`
+
+Stores an arbitrary attribute on the session. Used internally by the runtime to attach metadata such as the current URL path and the root component reference.
+
+<ParamField path="key" type="String" required>
+  The attribute name.
+</ParamField>
+
+<ParamField path="val" type="Object" required>
+  The value to store. Must be the same type as expected by `getAttr()` callers.
+</ParamField>
+
+```java
+session.setAttr("path", "/dashboard");
+session.setAttr("userId", currentUser.getId());
+```
+
+---
+
+### `getAttr(String key)`
+
+Retrieves a previously stored session attribute.
+
+<ParamField path="key" type="String" required>
+  The attribute name to look up.
+</ParamField>
+
+<ResponseField name="return" type="Object">
+  The stored value, or `null` if no attribute with that key exists.
+</ResponseField>
+
+```java
+String path = (String) session.getAttr("path");
+```
+
+---
+
+## How components receive the session
+
+Components do not receive a `JrxSession` directly as a constructor argument or field injection. The session context is managed by the JReactive runtime layer and passed through the request processing pipeline. If a component needs to access session attributes, it can do so via the runtime's handler methods or via attributes set before the component is invoked.
+
+<Note>Direct access to `JrxSession` from component code is an advanced use case. For the majority of applications, components interact with the session implicitly through reactive state changes that the runtime serializes and delivers automatically.</Note>

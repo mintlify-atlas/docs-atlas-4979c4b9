@@ -1,0 +1,108 @@
+---
+title: JButton
+description: A reactive button component with label, variant, loading state, and click event binding.
+---
+
+## Overview
+
+`JButton` renders an HTML `<button>` element styled with JReactive's design system. It supports a loading spinner that replaces the label while an async operation is in progress, a disabled flag, and an `onClick` binding that forwards a server-side `@Call` method to the client.
+
+All fields are `@Bind`, meaning the parent component passes them in as attributes using the `:propName="expression"` syntax.
+
+## Properties
+
+<ParamField path="label" type="string" default="Botón">
+  The visible button text. Hidden when `loading` is `true`.
+</ParamField>
+
+<ParamField path="type" type="string" default="primary">
+  Visual variant class appended to `jr-btn`. Common values: `primary`, `secondary`, `danger`.
+</ParamField>
+
+<ParamField path="loading" type="boolean" default="false">
+  When `true`, replaces the label with a spinner (`<span class="jr-spinner">`) and prevents user interaction visually.
+</ParamField>
+
+<ParamField path="disabled" type="boolean" default="false">
+  When `true`, the button is rendered in a disabled state.
+</ParamField>
+
+<ParamField path="onClick" type="string"  default="(empty)">
+  A `@Call` method expression invoked when the button is clicked, e.g. `"save(form)"`. Leave empty to render an inert button.
+</ParamField>
+
+## Template output
+
+The component renders the following HTML structure:
+
+```html template
+<button
+  type="button"
+  class="jr-btn {{type}}"
+  @click="{{onClick}}"
+>
+  {{#if loading}}
+    <span class="jr-spinner"></span>
+  {{/if}}
+
+  {{#if !loading}}
+    <span>{{label}}</span>
+  {{/if}}
+</button>
+```
+
+## Usage example
+
+Embed `JButton` inside a parent component's `template()`. Pass literal strings or state expressions using the `:prop` binding syntax.
+
+```html template
+<JButton
+  label="Save Changes"
+  type="primary"
+  :loading="isSaving"
+  :disabled="isSaving"
+  onClick="save(form)"
+/>
+```
+
+<Note>
+When `onClick` is set, the value must be a valid `@Call` method expression from the parent component, such as `"register(form)"` or `"deleteUser(row)"`.
+</Note>
+
+## Java integration example
+
+Declare state in the parent component and pass it to `JButton` via the template.
+
+```java ClientsPage.java
+@Component
+@Route(path = "/clients")
+@Client
+public class ClientsPage extends AppPage {
+
+    @State public boolean isSaving = false;
+
+    @Call
+    public void save(ClientForm form) {
+        this.isSaving = true;
+        service.save(form);
+        this.isSaving = false;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JButton
+              label="Save Changes"
+              type="primary"
+              :loading="isSaving"
+              :disabled="isSaving"
+              onClick="save(form)"
+            />
+        """;
+    }
+}
+```
+
+<Tip>
+Use `:loading="isSaving"` together with `:disabled="isSaving"` to give users clear feedback and prevent double-submission during server round-trips.
+</Tip>

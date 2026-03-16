@@ -1,0 +1,310 @@
+---
+title: 'Component lifecycle'
+description: 'Understand the complete JReactive component lifecycle: instantiation, initialization, rendering, mounting, state updates, and unmounting.'
+keywords: ['component lifecycle', 'onInit', 'onMount', 'onUnmount', 'render cycle', 'component state', 'mounted', 'unmounted']
+---
+
+Every `HtmlComponent` goes through a well-defined lifecycle from creation to destruction. Understanding this lifecycle is essential for managing resources, registering handlers, and producing correct reactive behavior.
+
+## Lifecycle overview
+
+<Steps>
+  <Step title="Instantiation">
+    The component class is instantiated by the `PageResolver` when no existing instance is found in the `StateStore` for the current session and route path. The constructor runs normally.
+
+    The component's initial `ComponentState` is `UNMOUNTED`.
+  </Step>
+  <Step title="onInit() called">
+    Before the first render, the engine calls `_initIfNeeded()`, which invokes `onInit()` exactly once per component lifetime — including after deserialization from Redis. The `_initialized` flag is persisted with the component state, so `onInit()` is never called a second time even if the component is restored from a store after a server restart.
+
+    ```java HtmlComponent.java
+    public void _initIfNeeded() {
+        if (!_initialized) {
+            onInit();
+            _initialized = true;
+        }
+    }
+    ```
+
+    Use `onInit()` for one-time setup that must survive across remounts: registering `EventBus` handlers, loading initial data, setting up application-level subscriptions.
+  </Step>
+  <Step title="Route parameters injected">
+    After the component is retrieved or created, the `PageResolver` injects route path parameters via `_injectParams()` and query string parameters via `_injectQueryParams()`. Fields annotated with `@Param` receive path variables (e.g., `/users/{id}`). Fields annotated with `@UrlParam` receive query string values (e.g., `?tab=settings`).
+
+    ```java
+    @Param("id")
+    public String userId;
+
+    @UrlParam("tab")
+    public String activeTab;
+    ```
+  </Step>
+  <Step title="render() called — _beginRenderCycle / template() / _endRenderCycle">
+    `render()` is the core method that produces the component's HTML. It delegates to `ComponentEngine.render(this)`, which calls `_beginRenderCycle()` before processing the template and `_endRenderCycle()` after.
+
+    **`_beginRenderCycle()`**: Moves the current child list into a reuse pool (`_renderPool`) and clears the live child list. This allows the engine to reuse existing child component instances across renders rather than discarding and recreating them, preserving their state and lifecycle.
+
+    **`template()`**: Returns the component's HTML template string. The default implementation reads `ClassName.html` from the classpath. Override it to return the template inline.
+
+    **`_endRenderCycle()`**: Any child components that were in the reuse pool but were not reclaimed during this render (because the template no longer references them) are unmounted and discarded.
+
+    ```java HtmlComponent.java
+    public String render() {
+        if (cached != null) return cached.html();
+
+        synchronized (this) {
+            if (cached != null) return cached.html();
+
+            _beginRenderCycle();
+            try {
+                this.cached = ComponentEngine.render(this);
+                return cached.html();
+            } finally {
+                _endRenderCycle();
+            }
+        }
+    }
+    ```
+
+    The rendered result is cached in `cached`. Subsequent calls to `render()` return the cached HTML until `_clearCache()` is called.
+  </Step>
+  <Step title="_mountRecursive() — onMount() called">
+    After render completes, the engine calls `_mountRecursive()` on the root component. This walks the live child tree and calls `onMount()` on every component whose state transitions from `UNMOUNTED` to `MOUNTED`.
+
+    ```java HtmlComponent.java
+    public void _mountRecursive() {
+        if (_state.compareAndSet(ComponentState.UNMOUNTED, ComponentState.MOUNTED)) {
+            onMount();
+        }
+        for (HtmlComponent child : _children()) {
+            child._mountRecursive();
+        }
+    }
+    ```
+
+    The `ComponentState` transition is atomic (`AtomicReference.compareAndSet`), so `onMount()` is called at most once per mount cycle even under concurrent access.
+
+    Use `onMount()` for activatable resources that need to be released on unmount: timers, background threads, file handles.
+  </Step>
+  <Step title="State changes — updateState() → ReactiveVar.set() → DOM update pushed">
+    While mounted, user interactions (via `@Call` methods) or server-side events can change `@State` fields. Call `updateState("fieldName")` to notify the reactive system of the change:
+
+    1. `updateState()` reads the current field value via reflection.
+    2. It calls `ReactiveVar.set(newValue)` on the binding for that field.
+    3. `ReactiveVar.set()` fires all registered `onChange` listeners.
+    4. `JrxPushHub` has registered a listener that encodes the key–value pair and pushes it to connected browser sessions over WebSocket.
+
+    For `SmartList`, `SmartSet`, and `SmartMap` state fields, mutation events (add, remove, update) are propagated as granular delta messages rather than full value replacements.
+  </Step>
+  <Step title="_clearCache() on re-render">
+    When a component needs to re-render (typically after a `SERVER_OWNED` state change), `_clearCache()` invalidates the cached render output recursively:
+
+    ```java HtmlComponent.java
+    public void _clearCache() {
+        this.cached = null;
+        for (HtmlComponent child : _children()) {
+            child._clearCache();
+        }
+    }
+    ```
+
+    After `_clearCache()`, the next call to `render()` reprocesses the template from scratch.
+  </Step>
+  <Step title="_unmountRecursive() — onUnmount() — bindings cleaned up">
+    When a component is removed from the live tree (because its parent's template no longer references it, the session disconnects, or `PageResolver.evict()` is called), `_unmountRecursive()` is called:
+
+    ```java HtmlComponent.java
+    public void _unmountRecursive() {
+        for (HtmlComponent child : _children()) {
+            child._unmountRecursive();
+        }
+        if (_state.compareAndSet(ComponentState.MOUNTED, ComponentState.UNMOUNTED)) {
+            onUnmount();
+            cleanupBindings();
+        }
+    }
+    ```
+
+    The method walks children depth-first (children before parent), then:
+    1. Transitions state from `MOUNTED` to `UNMOUNTED` atomically.
+    2. Calls `onUnmount()` for resource cleanup.
+    3. Calls `cleanupBindings()`, which calls `clearListeners()` on every `ReactiveVar` to remove all `onChange` subscriptions and prevent memory leaks.
+  </Step>
+</Steps>
+
+## ComponentState enum
+
+```java ComponentState.java
+public enum ComponentState {
+    MOUNTED, UNMOUNTED
+}
+```
+
+| State | Meaning |
+|---|---|
+| `UNMOUNTED` | Initial state. Component exists in memory or the store but is not actively serving a live session. Reactive listeners are inactive. |
+| `MOUNTED` | Component is actively serving a live WebSocket session. Reactive listeners fire and push state to the browser. |
+
+The state is held in a `transient AtomicReference<ComponentState>` and is not serialized. A component deserialized from Redis always starts in `UNMOUNTED` state and transitions to `MOUNTED` the next time it is rendered and mounted.
+
+## onInit() vs. onMount()
+
+The distinction between these two hooks is critical:
+
+<CardGroup cols={2}>
+  <Card title="onInit()" icon="power-off">
+    Called **once per component lifetime**. The `_initialized` flag is persisted with the component. If the component is serialized to Redis and later deserialized, `onInit()` is NOT called again. Suitable for: one-time data loading, EventBus handler registration, permanent subscriptions.
+  </Card>
+  <Card title="onMount()" icon="play">
+    Called **each time the component transitions from UNMOUNTED to MOUNTED**. After deserialization and remounting, `onMount()` runs again. Suitable for: starting timers, opening connections, activating resource-intensive operations that should be cleaned up when the session ends.
+  </Card>
+</CardGroup>
+
+### ClockLeaf example
+
+The `ClockLeaf` demo component illustrates the correct use of both hooks. `onInit()` sets the initial clock value synchronously for the first render. `onMount()` starts the background timer. `onUnmount()` cancels the timer when the session ends:
+
+```java ClockLeaf.java
+public class ClockLeaf extends HtmlComponent {
+
+    @Bind public Type<String> greet = $("Hello");
+    @Bind public Type<String> clock = $("--:--:--");
+
+    transient Timer timer;
+
+    @Override
+    public void onInit() {
+        // Set initial time for first render (runs once, even after Redis restore)
+        clock.set(LocalTime.now().withNano(0).toString());
+    }
+
+    @Override
+    protected void onMount() {
+        // Start the timer every time the component is activated
+        timer = new Timer(true);
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override public void run() {
+                try {
+                    clock.set(LocalTime.now().withNano(0).toString());
+                } catch (Exception e) {
+                    System.err.println("Clock tick failed.");
+                }
+            }
+        }, 1000, 1000);
+    }
+
+    @Override
+    protected void onUnmount() {
+        // Cancel the timer to release the thread
+        if (timer != null) {
+            timer.cancel();
+            timer = null;
+        }
+    }
+
+    @Override
+    public String template() {
+        return """
+               <div class="clock">
+                 <h1>{{greet}}, the time is {{clock}}!</h1>
+                 <input name="greet" placeholder="Type greeting">
+               </div>
+               """;
+    }
+}
+```
+
+<Note>
+The `timer` field is marked `transient`. Background threads and timers cannot be serialized to Redis. Mark all non-serializable resources `transient` and always start them in `onMount()` so they are re-created after deserialization.
+</Note>
+
+## The render cycle and child reuse pool
+
+JReactive avoids recreating child component instances on every render by maintaining a reuse pool. Understanding this mechanism matters when building components that create dynamic child trees.
+
+### How the pool works
+
+At the start of `render()`, `_beginRenderCycle()` is called:
+
+```java HtmlComponent.java
+public void _beginRenderCycle() {
+    getLock().lock();
+    try {
+        if (_renderPool != null) return; // Guard against re-entrance
+
+        _renderPool = new ArrayList<>(_children); // Snapshot current children as reusable
+        _children.clear();                         // Reset live child list
+        _childIdSeq.clear();
+        _childRefAlias.clear();
+    } finally {
+        getLock().unlock();
+    }
+}
+```
+
+During template processing, whenever the engine encounters a child component tag (e.g., `<ClockLeaf />`), it first checks `_renderPool` for an existing instance of that class. If found, the existing instance is reused — its state is preserved and no remounting occurs. If not found, a new instance is created.
+
+At the end of `render()`, `_endRenderCycle()` is called:
+
+```java HtmlComponent.java
+public void _endRenderCycle() {
+    List<HtmlComponent> pool;
+    getLock().lock();
+    try {
+        pool = _renderPool;
+        _renderPool = null;
+    } finally {
+        getLock().unlock();
+    }
+
+    // Unmount any children that were not reclaimed this render
+    if (pool != null) {
+        for (HtmlComponent z : pool) {
+            try { z._unmountRecursive(); } catch (Throwable ignored) {}
+        }
+        pool.clear();
+    }
+}
+```
+
+Any component that was in the pool but was not reclaimed (because the template no longer references it) is unmounted and released.
+
+## Thread safety
+
+`HtmlComponent` is designed for concurrent access from HTTP request threads, WebSocket message threads, and background tasks. Key state-mutating methods acquire a `ReentrantLock` before operating:
+
+```java HtmlComponent.java
+private ReentrantLock getLock() {
+    ReentrantLock result = lock;
+    if (result == null) {
+        synchronized (this) {
+            result = lock;
+            if (result == null) {
+                lock = result = new ReentrantLock();
+            }
+        }
+    }
+    return result;
+}
+```
+
+The lock is `transient` and uses double-checked locking for lazy initialization. After deserialization from Redis the lock field is `null` and is transparently recreated on first access.
+
+Methods that acquire the lock include: `_beginRenderCycle()`, `_endRenderCycle()`, `_captureStateSnapshot()`, `_syncState()`, `addChild()`, `_children()`, `getRawBindings()`, `updateState()`, and `_nextChildIdSeq()`.
+
+<Warning>
+Do not call `updateState()` from within `onMount()` if that state change will trigger a re-render that recurses back into `render()` on the same thread. The `ReentrantLock` is reentrant, but re-entering `_beginRenderCycle()` is guarded and will silently skip the second invocation, which can leave the child pool in an inconsistent state. Perform side-effectful state changes in `@Call` methods or scheduled tasks.
+</Warning>
+
+## Lifecycle summary table
+
+| Method / event | When it runs | Serialized | Runs after Redis restore |
+|---|---|---|---|
+| Constructor | Once, on first creation | N/A | No (deserialization uses the store) |
+| `onInit()` | Once per lifetime, before first render | Yes (`_initialized` flag) | No |
+| `_injectParams()` | On each request | No | Yes |
+| `render()` / `template()` | On first render, then on `_clearCache()` | No (result is cached) | Yes |
+| `onMount()` | On each activation (UNMOUNTED → MOUNTED) | No | Yes |
+| `updateState()` | On demand, from `@Call` or background tasks | N/A | N/A |
+| `onUnmount()` | On deactivation (MOUNTED → UNMOUNTED) | No | N/A |
+| `cleanupBindings()` | Immediately after `onUnmount()` | No | N/A |

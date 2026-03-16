@@ -1,0 +1,201 @@
+---
+title: "State management"
+description: "Understand the four state modes in JReactive: @StatefulRam, @Stateful, @Stateless, and @Client, plus how @State and @Bind work."
+---
+
+JReactive gives you fine-grained control over where and how component state lives. Two annotations mark fields as reactive, and four class-level annotations choose a storage strategy.
+
+## @State vs @Bind
+
+<CardGroup cols={2}>
+  <Card title="@State" icon="database">
+    Marks a field as the **root of reactive state**. JReactive tracks it for changes, serializes it when needed, and pushes deltas to the browser when it changes. Use `@State` for data that changes in response to user events or server logic.
+  </Card>
+  <Card title="@Bind" icon="link">
+    Exposes a field to the template **read-write** by default. The field value can be updated from a browser input (`name=` attribute) without a `@Call` method. Use `@Bind` for view-only props or two-way-bound inputs.
+  </Card>
+</CardGroup>
+
+```java title="BaseCounter.java"
+public abstract class BaseCounter extends HtmlComponent {
+
+    @State
+    public int count = 0;
+}
+```
+
+```java title="UserPage.java"
+@Route(path = "/users/{id}")
+public class UserPage extends AppPage {
+
+    @Param("id")
+    @Bind String userId;             // from URL path, read-only from browser
+
+    @Bind public Type<String> name = $("")
+    // Type<T> is a lightweight ReactiveVar wrapper
+}
+```
+
+### @Bind options
+
+| Attribute | Default | Description |
+|---|---|---|
+| `value` | field name | Override the template key exposed to the template |
+| `readOnly` | `false` | When `true`, browser-to-server updates for this field are ignored |
+
+```java
+@Bind(value = "userName", readOnly = true)
+String internalName;
+```
+
+## The four state modes
+
+Apply one of these annotations to the **class** to choose where JReactive stores the component's serialized state between requests:
+
+| Annotation | Storage | Survives restart | Scales horizontally |
+|---|---|---|---|
+| `@StatefulRam` | JVM heap (L1) | No | No (node-local) |
+| `@Stateful` | Redis / StateStore | Yes | Yes |
+| `@Stateless` | Signed HTML payload | N/A — zero server memory | Yes |
+| `@Client` + `@StatefulRam` | Browser memory (CSR) | No | N/A |
+
+### @StatefulRam
+
+State lives exclusively in the JVM heap. It is never serialized. This is the fastest option and the best choice for ephemeral UI state that can safely reset on server restart.
+
+```java title="SignupPage.java"
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+    ...
+}
+```
+
+<Warning>
+`@StatefulRam` state is lost on every server restart and is not shared between cluster nodes. Do not use it for anything that must survive a redeploy.
+</Warning>
+
+### @Stateful
+
+The component is serialized (Java serialization) and stored in Redis or a pluggable `StateStore` after each interaction. On the next request, it is deserialized and resumed — state survives restarts and scales across multiple nodes.
+
+Your component must implement `java.io.Serializable`:
+
+```java
+@Stateful
+public class ShoppingCart extends HtmlComponent implements Serializable {
+
+    @State
+    List<CartItem> items = new ArrayList<>();
+}
+```
+
+<Note>
+All fields that should survive serialization must be serializable. Mark transient resources (timers, threads, sockets) with the `transient` keyword.
+</Note>
+
+### @Stateless
+
+Zero server-side memory. The entire `@State` is encoded into the rendered HTML, cryptographically signed, and sent to the browser. On each event the browser returns the payload, which is verified and hydrated on the fly.
+
+```java
+@Stateless
+public class SearchBar extends HtmlComponent {
+
+    @State
+    public String query = "";
+}
+```
+
+<Tip>
+Use `@Stateless` for pages that can be freely shared via URL (search results, filters) or when you have thousands of concurrent users and cannot afford per-user server memory.
+</Tip>
+
+### @Client (CSR mode)
+
+`@Client` combined with `@StatefulRam` activates Client-Side Rendering. The server sends the initial HTML and then hands off state management to the browser's JavaScript runtime. Further interactions happen without round-trips for rendering.
+
+```java title="CounterLeaf.java"
+@Client
+@StatefulRam
+public class CounterLeaf extends BaseCounter {
+    // All rendering and state updates happen in the browser
+}
+```
+
+This is ideal for highly interactive widgets (counters, toggles, local form state) that do not need server-side data.
+
+## Defining state with @State
+
+Annotate any field with `@State` to make it reactive. The field can be:
+
+- A primitive or boxed type (`int`, `String`, `Boolean`, ...)
+- A POJO (plain Java object)
+- A `List`, `Set`, or `Map` — automatically promoted to `SmartList`, `SmartSet`, or `SmartMap`
+
+```java title="NewStateTestPage.java"
+@State
+public String newItem = "";
+
+@State
+public String title = "Demo @State sin Type";
+
+@State
+public List<String> items = new ArrayList<>();
+```
+
+When JReactive processes `@State` fields that hold a `List`, `Set`, or `Map`, it automatically wraps them in the corresponding `Smart*` type so that individual mutations (add, remove, set) produce fine-grained DOM deltas instead of re-rendering the whole list.
+
+## updateState()
+
+When you mutate a `@State` POJO or reassign a primitive field inside a `@Call` method, call `updateState("fieldName")` to notify the reactive system:
+
+```java title="SignupPage.java"
+@State
+PageState state = new PageState();
+
+@Call
+public void register(@Valid SignupForm form) {
+    state.lastMessage = "Usuario " + form.name + " registrado correctamente";
+    updateState("state"); // push the new state to the browser
+}
+```
+
+`updateState()` finds the `ReactiveVar` backing the named `@State` field, sets it to the current field value, and fires all listeners — triggering a DOM delta update.
+
+<Note>
+`@Call` methods that modify `@State` fields directly (like primitives or SmartList mutations) do **not** require a manual `updateState()` call — the runtime handles it automatically after the call returns. You only need `updateState()` when you mutate a POJO's internal fields.
+</Note>
+
+## Smart collections
+
+When a `@State` field is a `List`, `Set`, or `Map`, JReactive replaces it with a `SmartList`, `SmartSet`, or `SmartMap`. These are standard Java collections that fire change events for every mutation:
+
+| Operation | Event fired |
+|---|---|
+| `list.add(item)` | `ADD` at index |
+| `list.remove(i)` | `REMOVE` at index |
+| `list.set(i, v)` | `SET` at index |
+| `list.clear()` | `CLEAR` |
+| `map.put(k, v)` | `PUT` key/value |
+| `map.remove(k)` | `REMOVE` key |
+| `set.add(e)` | `ADD` element |
+| `set.remove(e)` | `REMOVE` element |
+
+Each event is translated into a minimal DOM patch — only the affected list item is added, removed, or replaced, not the entire list.
+
+```java title="NewStateTestPage.java"
+@Call
+public void addItem(String value) {
+    items.add(value);   // fires ADD → browser receives a single-item delta
+    this.newItem = "";
+}
+
+@Call
+public void resetList() {
+    items.clear();      // fires CLEAR → browser removes all items at once
+}
+```
+
+You never need to call `updateState()` after a Smart collection mutation.

@@ -1,0 +1,418 @@
+---
+title: 'State stores'
+description: 'Choose and configure a StateStore implementation: CaffeineStateStore for in-memory, RedisStateStore for distributed, or HybridStateStore for both.'
+keywords: ['state store', 'caffeine', 'redis', 'hybrid store', 'session state', 'distributed state', 'compare and swap', 'optimistic locking']
+---
+
+JReactive's `StateStore` SPI controls where component state is persisted between WebSocket messages and HTTP requests. The right store depends on your deployment topology:
+
+<CardGroup cols={2}>
+  <Card title="CaffeineStateStore" icon="memory">
+    Default. In-process LRU cache backed by Caffeine. Zero configuration. Suitable for single-node deployments.
+  </Card>
+  <Card title="RedisStateStore" icon="server">
+    Distributed. Serializes component trees to Redis. Required for multi-node deployments where different requests for the same session may land on different JVM instances.
+  </Card>
+  <Card title="HybridStateStore" icon="layer-group">
+    L1 Caffeine + L2 Redis. Reads from RAM; writes through to Redis asynchronously or synchronously depending on the configured consistency mode.
+  </Card>
+  <Card title="Custom store" icon="wrench">
+    Implement the `StateStore` interface and register it as a `@Primary` Spring `@Bean` to plug in your own persistence backend.
+  </Card>
+</CardGroup>
+
+## The StateStore SPI
+
+All store implementations implement the same interface:
+
+```java StateStore.java
+public interface StateStore {
+    HtmlComponent get(String sessionId, String path);
+    void put(String sessionId, String path, HtmlComponent component);
+    boolean replace(String sessionId, String path, HtmlComponent component, long expectedVersion);
+    void remove(String sessionId, String path);
+    void removeSession(String sessionId);
+}
+```
+
+| Method | Description |
+|---|---|
+| `get(sessionId, path)` | Retrieve the live component for a session and route path. Returns `null` on cache miss. |
+| `put(sessionId, path, component)` | Store a component. Used on creation (first visit). |
+| `replace(sessionId, path, component, expectedVersion)` | Optimistic Compare-And-Swap update. Returns `true` if the current version matched `expectedVersion` and the update was applied. Returns `false` on conflict. |
+| `remove(sessionId, path)` | Delete a single component from the store. |
+| `removeSession(sessionId)` | Delete all components for a session (called on disconnect). |
+
+The `replace()` method is the core of JReactive's optimistic concurrency model. Before persisting a state change, the runtime reads the component's current `_version`, applies the mutation, and then calls `replace()` with `expectedVersion = current _version`. If a concurrent request modified the component between the read and the write, `replace()` returns `false` and the caller retries.
+
+## CaffeineStateStore
+
+`CaffeineStateStore` is the default store. It requires no additional dependencies beyond Caffeine, which is already included in the JVM runtime module.
+
+```java CaffeineStateStore.java
+public class CaffeineStateStore implements StateStore {
+
+    private final Cache<String, HtmlComponent> cache;
+
+    public CaffeineStateStore() {
+        this.cache = Caffeine.newBuilder()
+                .expireAfterAccess(30, TimeUnit.MINUTES)
+                .maximumSize(10_000)
+                .removalListener((String key, HtmlComponent val, RemovalCause cause) -> {
+                    // Unmount components automatically on eviction
+                    if (val != null) val._unmountRecursive();
+                })
+                .build();
+    }
+
+    // ...
+}
+```
+
+### Characteristics
+
+- **TTL**: Entries expire 30 minutes after last access.
+- **Capacity**: Maximum 10,000 entries (one per session/path pair).
+- **Eviction**: When an entry is evicted, `_unmountRecursive()` is called automatically, triggering `onUnmount()` on the component tree and cleaning up reactive bindings.
+- **Concurrency**: The `replace()` method uses Caffeine's atomic `compute()` to implement optimistic locking entirely in JVM memory without locks.
+
+```java CaffeineStateStore.java
+@Override
+public boolean replace(String sid, String path, HtmlComponent newComp, long expectedVersion) {
+    String key = k(sid, path);
+    AtomicBoolean success = new AtomicBoolean(false);
+
+    cache.asMap().compute(key, (k, currentComp) -> {
+        if (currentComp == null) {
+            if (expectedVersion == 0) {
+                newComp._setVersion(1);
+                success.set(true);
+                return newComp;
+            } else {
+                return null; // Expected update but entry doesn't exist
+            }
+        }
+
+        if (currentComp._getVersion() == expectedVersion) {
+            newComp._setVersion(expectedVersion + 1);
+            success.set(true);
+            return newComp;
+        } else {
+            return currentComp; // Conflict: keep current
+        }
+    });
+
+    return success.get();
+}
+```
+
+### When to use CaffeineStateStore
+
+Use `CaffeineStateStore` when:
+- Running a single-node deployment.
+- All WebSocket connections and HTTP requests for a session land on the same JVM instance.
+- You need zero infrastructure dependencies.
+
+## RedisStateStore
+
+`RedisStateStore` serializes component state to Redis hashes, enabling state sharing across multiple JVM instances. It is part of the `jreactive-store-redis` module.
+
+```xml pom.xml
+<dependency>
+  <groupId>com.ciro</groupId>
+  <artifactId>jreactive-store-redis</artifactId>
+  <version>0.9.9</version>
+</dependency>
+```
+
+### Configuration properties
+
+```properties application.properties
+jreactive.redis.host=localhost
+jreactive.redis.port=6379
+jreactive.store.type=redis
+jreactive.store.serialization=json
+jreactive.store.consistency=strong
+```
+
+| Property | Default | Options |
+|---|---|---|
+| `jreactive.redis.host` | `localhost` | Any Redis host |
+| `jreactive.redis.port` | `6379` | Any Redis port |
+| `jreactive.store.type` | *(none)* | `redis`, `hybrid` |
+| `jreactive.store.serialization` | `json` | `json`, `fst` |
+| `jreactive.store.consistency` | `strong` | `strong`, `eventual` |
+
+### Serialization options
+
+RedisStateStore delegates serialization to a pluggable `StateSerializer`. Two implementations are provided:
+
+<Tabs>
+  <Tab title="Jackson (json)">
+    The default. Uses Jackson `ObjectMapper` to serialize component trees to JSON. Human-readable in Redis, compatible with all Java types that Jackson can handle. Requires component fields to be serializable by Jackson.
+
+    ```properties
+    jreactive.store.serialization=json
+    ```
+  </Tab>
+  <Tab title="FST (fst)">
+    Uses the FST (Fast Serialization) library for binary Java serialization. Faster and more compact than JSON for complex object graphs. Components must implement `java.io.Serializable`.
+
+    ```properties
+    jreactive.store.serialization=fst
+    ```
+  </Tab>
+</Tabs>
+
+The `RedisStoreConfig` Spring configuration selects the serializer via `@ConditionalOnProperty`:
+
+```java RedisStoreConfig.java
+@Bean
+@ConditionalOnProperty(name = "jreactive.store.serialization", havingValue = "json", matchIfMissing = true)
+public StateSerializer jsonSerializer(ObjectMapper mapper) {
+    return new JacksonStateSerializer(mapper);
+}
+
+@Bean
+@ConditionalOnProperty(name = "jreactive.store.serialization", havingValue = "fst")
+public StateSerializer fstSerializer() {
+    return new FstStateSerializer();
+}
+```
+
+### Compare-And-Swap with Lua
+
+The `replace()` method on `RedisStateStore` uses an atomic Lua script evaluated on the Redis server to implement optimistic locking without race conditions:
+
+```java RedisStateStore.java
+private static final String CAS_SCRIPT = """
+    local key = KEYS[1]
+    local expectedVer = tonumber(ARGV[1])
+    local newData = ARGV[2]
+
+    if redis.call('exists', key) == 0 then
+        if expectedVer == 0 then
+            redis.call('hset', key, 'data', newData, 'v', 1)
+            redis.call('expire', key, 1800)
+            return 1
+        else
+            return 0
+        end
+    end
+
+    local currentVer = tonumber(redis.call('hget', key, 'v') or '0')
+    if currentVer == expectedVer then
+        redis.call('hset', key, 'data', newData, 'v', currentVer + 1)
+        redis.call('expire', key, 1800)
+        return 1
+    else
+        return 0
+    end
+""";
+```
+
+The script:
+1. Checks if the key exists in Redis.
+2. If it doesn't exist, only allows creation when `expectedVersion == 0`.
+3. If it exists, reads the current version stored in the hash's `v` field.
+4. If `currentVersion == expectedVersion`, writes the new data and increments the version atomically.
+5. Returns `1` on success, `0` on conflict.
+
+Because Lua scripts run atomically on Redis, no other client can modify the key between the read and write operations — eliminating the need for distributed locks.
+
+### Redis key structure
+
+| Key pattern | Purpose |
+|---|---|
+| `jrx:page:{sessionId}:{path}` | Component hash with `data` (serialized bytes) and `v` (version integer) fields. TTL: 30 minutes. |
+| `jrx:idx:{sessionId}` | Set of path strings for the session. Used by `removeSession()` to delete all components without scanning all keys. TTL: 30 minutes. |
+
+### The @Stateful annotation
+
+For a component's state to survive server restarts and travel to Redis, the component class (and all objects reachable from its `@State` fields) must be serializable. When using FST serialization, implement `java.io.Serializable`. When using JSON, ensure all field types are Jackson-serializable.
+
+```java StoreTestPage.java
+@Route(path = "/store-test")
+public class StoreTestPage extends AppPage {
+
+    @State
+    public StoreState store = new StoreState();
+
+    public static class StoreState implements Serializable {
+        public Ui ui = new Ui();
+        public User user = new User();
+    }
+
+    public static class Ui implements Serializable {
+        public String theme  = "light";
+        public String lang   = "es";
+        public String source = "initial";
+    }
+
+    public static class User implements Serializable {
+        public String name = "Invitado";
+        public String role = "GUEST";
+    }
+
+    @Call
+    public void setBackendDark() {
+        store.ui.theme  = "dark";
+        store.ui.source = "backend:setDark";
+        updateState("store");
+    }
+
+    // ...
+}
+```
+
+## HybridStateStore
+
+`HybridStateStore` combines a Caffeine L1 cache with a Redis L2 store. Reads go to RAM first and fall back to Redis only on a cache miss. Writes go to both layers.
+
+```java RedisStoreConfig.java
+@Bean
+@Primary
+@ConditionalOnProperty(name = "jreactive.store.type", havingValue = "hybrid")
+public StateStore hybridStore(RedisStateStore redisStore) {
+    CaffeineStateStore l1 = new CaffeineStateStore();
+    boolean isStrong = "strong".equalsIgnoreCase(consistencyMode);
+    return new HybridStateStore(l1, redisStore, isStrong);
+}
+```
+
+Enable it with:
+
+```properties application.properties
+jreactive.store.type=hybrid
+jreactive.store.consistency=strong   # or: eventual
+```
+
+### Consistency modes
+
+<Tabs>
+  <Tab title="Strong consistency">
+    All writes block until Redis confirms the write. The CAS `replace()` operation runs on Redis first; if it succeeds, the local Caffeine cache is updated. If it fails (concurrent modification), the Caffeine entry is invalidated.
+
+    ```java HybridStateStore.java
+    // Strong mode replace()
+    boolean success = l2.replace(sid, path, comp, expectedVersion);
+    if (success) {
+        comp._setVersion(expectedVersion + 1);
+        l1.put(sid, path, comp);
+        return true;
+    } else {
+        l1.remove(sid, path); // Invalidate dirty cache
+        return false;
+    }
+    ```
+
+    Choose strong consistency when correctness matters more than throughput, or when multiple nodes may receive requests for the same session simultaneously.
+  </Tab>
+  <Tab title="Eventual consistency">
+    Writes update Caffeine immediately and submit the Redis write as a `CompletableFuture`. The method returns `true` optimistically. If the async Redis write detects a conflict, the Caffeine entry is invalidated.
+
+    ```java HybridStateStore.java
+    // Eventual mode replace()
+    long currentVer = comp._getVersion();
+    comp._setVersion(currentVer + 1);
+    l1.put(sid, path, comp); // Fast: update RAM immediately
+
+    CompletableFuture.runAsync(() -> {
+        boolean success = l2.replace(sid, path, comp, currentVer);
+        if (!success) {
+            l1.remove(sid, path); // Invalidate on conflict
+        }
+    });
+    return true;
+    ```
+
+    Choose eventual consistency for maximum throughput when concurrent writes to the same session from different nodes are rare or acceptable to retry.
+  </Tab>
+</Tabs>
+
+### @StatefulRam components in HybridStateStore
+
+Components annotated with `@StatefulRam` are RAM-only and never written to Redis, even when `HybridStateStore` is active. The `put()` method returns early for these components:
+
+```java HybridStateStore.java
+@Override
+public void put(String sid, String path, HtmlComponent comp) {
+    l1.put(sid, path, comp); // Always write to RAM
+
+    if (comp.getClass().isAnnotationPresent(StatefulRam.class)) {
+        return; // Skip Redis for RAM-only components
+    }
+
+    // Write to Redis (sync or async depending on consistency mode)
+    ...
+}
+```
+
+### Read-repair
+
+When a `get()` finds the component in Redis but not in Caffeine (e.g., after a server restart), the component is automatically promoted to the L1 cache:
+
+```java HybridStateStore.java
+@Override
+public HtmlComponent get(String sid, String path) {
+    HtmlComponent comp = l1.get(sid, path);
+    if (comp != null) return comp;
+
+    comp = l2.get(sid, path);
+    if (comp != null) {
+        l1.put(sid, path, comp); // Read-repair: populate L1
+    }
+    return comp;
+}
+```
+
+## Implementing a custom StateStore
+
+To use a different persistence backend (e.g., Hazelcast, Infinispan, a database), implement `StateStore` and expose it as a `@Primary` Spring `@Bean`:
+
+```java MyCustomStoreConfig.java
+@Configuration
+public class MyCustomStoreConfig {
+
+    @Bean
+    @Primary
+    public StateStore customStateStore() {
+        return new MyCustomStateStore();
+    }
+}
+```
+
+```java MyCustomStateStore.java
+public class MyCustomStateStore implements StateStore {
+
+    @Override
+    public HtmlComponent get(String sessionId, String path) {
+        // Deserialize and return component, or null on miss
+    }
+
+    @Override
+    public void put(String sessionId, String path, HtmlComponent component) {
+        // Serialize and store
+    }
+
+    @Override
+    public boolean replace(String sessionId, String path, HtmlComponent component, long expectedVersion) {
+        // Atomically update only if current version == expectedVersion
+        // Return true on success, false on conflict
+    }
+
+    @Override
+    public void remove(String sessionId, String path) {
+        // Delete a single entry
+    }
+
+    @Override
+    public void removeSession(String sessionId) {
+        // Delete all entries for the session
+    }
+}
+```
+
+<Tip>
+The most critical method to get right is `replace()`. It must be atomic — no two concurrent callers with the same `sessionId` and `path` should both succeed if they provide the same `expectedVersion`. Use your backend's native atomic CAS or conditional write primitives.
+</Tip>

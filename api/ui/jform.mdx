@@ -1,0 +1,123 @@
+---
+title: JForm
+description: A form wrapper component that renders a <form> element with an optional title, layout modifier, and submit handler.
+---
+
+## Overview
+
+`JForm` wraps form fields in a `<form class="jrx-form">` element. It provides:
+
+- An optional heading rendered above the fields.
+- A layout modifier class (`layout-vertical`, `layout-horizontal`) applied to the fields container.
+- An `onSubmit` binding that wires a `@Call` method to the form's native `submit` event.
+- A default submit `<button>` that is rendered automatically when `onSubmit` is set.
+- A `<slot />` that receives child components such as `JInput`, `JSelect`, and `JCheckBox`.
+
+## Properties
+
+<ParamField path="title" type="Type<String>"  default="(empty)">
+  Optional heading text. When set, renders an `<h2 class="jrx-form-title">` above the fields.
+</ParamField>
+
+<ParamField path="layout" type="Type<String>" default="vertical">
+  Layout modifier appended as `layout-{value}` to the fields container. Accepts `vertical` or `horizontal`.
+</ParamField>
+
+<ParamField path="onSubmit" type="string"  default="(empty)">
+  A `@Call` expression invoked on form submission, e.g. `"save(form)"`. When set, JForm also renders a default submit button. Leave empty to omit both the handler and the button.
+</ParamField>
+
+## Template output
+
+```html template
+<form class="jrx-form" @submit="{{onSubmit}}" novalidate>
+
+  {{#if title}}
+    <h2 class="jrx-form-title">{{title}}</h2>
+  {{/if}}
+
+  <div class="jrx-form-body layout-{{layout}}">
+    <slot />
+  </div>
+
+  {{#if onSubmit}}
+    <button type="submit">Enviar</button>
+  {{/if}}
+
+</form>
+```
+
+<Note>
+The `novalidate` attribute is always present. JReactive relies on server-side Bean Validation (`@Valid`) rather than native browser validation.
+</Note>
+
+## Usage example
+
+Place `JInput`, `JSelect`, or `JCheckBox` components inside `JForm` as children. They fill the `<slot />`.
+
+```html template
+<JForm title="Client details" onSubmit="save(form)">
+
+  <input type="hidden" name="form.id" value="{{form.id}}" />
+
+  <JInput
+    label="Full name"
+    :field="form.name"
+    required="true"
+  />
+
+  <JInput
+    label="Email"
+    type="email"
+    :field="form.email"
+    required="true"
+  />
+
+  <JSelect
+    label="Status"
+    :field="form.status"
+    :options="statusOptions"
+    placeholder="Select a status"
+  />
+
+</JForm>
+```
+
+## Java integration example
+
+```java ClientsPage.java
+@Component
+@Route(path = "/clients")
+@Client
+public class ClientsPage extends AppPage {
+
+    @State public Client form = new Client();
+    @State public List<JSelect.Option> statusOptions = new ArrayList<>();
+
+    @Override
+    public void onInit() {
+        this.statusOptions = JSelect.from("Active", "Inactive");
+    }
+
+    @Call
+    public void save(Client form) {
+        service.save(form);
+        this.isModalOpen = false;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JForm onSubmit="save(form)">
+              <JInput label="Name" :field="form.name" required="true" />
+              <JInput label="Email" type="email" :field="form.email" required="true" />
+              <JSelect label="Status" :field="form.status" :options="statusOptions" />
+            </JForm>
+        """;
+    }
+}
+```
+
+<Tip>
+Nest `JForm` inside `JModal` to build inline CRUD dialogs. The form's `onSubmit` handler can close the modal by setting a boolean `@State` field to `false` after saving.
+</Tip>

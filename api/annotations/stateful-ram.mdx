@@ -1,0 +1,73 @@
+---
+title: "@StatefulRam"
+description: "Keeps component state in JVM heap only. State is never serialized to an external store, making it the fastest option for single-node or client-side-rendered components."
+---
+
+`@StatefulRam` stores the component instance in an in-process memory map (L1 cache) tied to the WebSocket session. State is retained across requests as long as the JVM process is running, but it is never written to Redis or any other external store.
+
+This is the recommended mode for components annotated with `@Client`, where rendering happens in the browser and the server only needs to hold lightweight state between interactions.
+
+## Target
+
+`TYPE`
+
+## Usage
+
+### Counter with client-side rendering
+
+```java CounterLeaf.java
+import com.ciro.jreactive.annotations.Client;
+import com.ciro.jreactive.annotations.StatefulRam;
+
+@Client
+@StatefulRam
+public class CounterLeaf extends BaseCounter {
+
+    @Override
+    protected String template() {
+        return """
+            <div style="border: 2px dashed #666; padding: 10px; margin: 10px;">
+                <h3>Counter (CSR)</h3>
+                <p>Count: <strong>{{count}}</strong></p>
+                <button @click="increment()">+1</button>
+                <button @click="reset()">Reset</button>
+            </div>
+        """;
+    }
+}
+```
+
+### Signup page with in-memory state
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    @State
+    PageState state = new PageState();
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        state.lastMessage = "User " + form.name + " registered successfully";
+        updateState("state");
+    }
+}
+```
+
+## Choosing a state mode
+
+| Annotation | Storage | Shared across nodes | Survives restart |
+|------------|---------|---------------------|------------------|
+| `@Stateful` | Redis (external) | Yes | Yes |
+| `@StatefulRam` | JVM heap | No | No |
+| `@Stateless` | Signed HTML token | N/A | Yes |
+| `@Client` | Browser | N/A | No |
+
+## Notes
+
+- `@StatefulRam` is **not suitable for horizontally scaled deployments** unless you use sticky sessions. State is local to the JVM instance that created it — a request routed to a different node will find no state.
+- Unlike `@Stateful`, there is no serialization requirement. Fields do not need to implement `Serializable`.
+- On JVM restart or pod restart (e.g., Kubernetes rolling update), all `@StatefulRam` state is lost and components are re-initialized from scratch.
+- Do not combine with `@Stateful` or `@Stateless` on the same class.

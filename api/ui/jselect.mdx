@@ -1,0 +1,161 @@
+---
+title: JSelect
+description: A labeled <select> component with options binding, placeholder, validation markers, and a change event callback.
+---
+
+## Overview
+
+`JSelect` renders a `<select>` element inside a labelled field container. Options are passed as a `List<JSelect.Option>` and can be built from plain strings, a `Map<String, String>`, or any `Enum` using the provided static helper methods.
+
+The component uses `field` to set the `name` attribute on the `<select>`, which integrates with JReactive's server-side form deserialization.
+
+## Properties
+
+<ParamField path="field" type="Type<String>"  default="(empty)">
+  Maps to the `name` attribute of the `<select>`. Use dot notation to target a form object property, e.g. `"form.status"`.
+</ParamField>
+
+<ParamField path="label" type="Type<String>"  default="(empty)">
+  Visible label text rendered above the select element.
+</ParamField>
+
+<ParamField path="placeholder" type="Type<String>"  default="(empty)">
+  When set, renders a disabled, pre-selected hidden `<option>` as a prompt (e.g. `"Select a status"`).
+</ParamField>
+
+<ParamField path="required" type="Type<Boolean>" default="false">
+  When `true`, appends a `*` marker to the label and sets the `:required` attribute on the `<select>`.
+</ParamField>
+
+<ParamField path="disabled" type="Type<Boolean>" default="false">
+  When `true`, disables the `<select>` element.
+</ParamField>
+
+<ParamField path="helpText" type="Type<String>"  default="(empty)">
+  Optional helper text rendered below the select as `<small class="jrx-help">`.
+</ParamField>
+
+<ParamField path="options" type="Type<List<Option>>" default="[]">
+  The list of `JSelect.Option` objects to render as `<option>` elements. Each option has `value`, `label`, and `disabled` fields.
+</ParamField>
+
+<ParamField path="onChange" type="string"  default="(empty)">
+  A `@Call` expression invoked via `@change` when the user selects a new option.
+</ParamField>
+
+## The `JSelect.Option` class
+
+`JSelect.Option` is a nested serializable class with three public fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `value` | `String` | The value submitted with the form. |
+| `label` | `String` | The text shown in the dropdown. |
+| `disabled` | `boolean` | When `true`, the option is unselectable. |
+
+## Static helper methods
+
+Use these helpers on your component or page to build option lists without boilerplate:
+
+```java
+// From a list of strings (value == label)
+List<JSelect.Option> opts = JSelect.from("Active", "Inactive", "Pending");
+
+// From a Map<String, String> (key = value, value = label)
+List<JSelect.Option> opts = JSelect.from(Map.of("en", "English", "es", "Spanish"));
+
+// From an Enum (name() used for both value and label)
+List<JSelect.Option> opts = JSelect.fromEnum(Status.class);
+```
+
+## Template output
+
+```html template
+<div class="jrx-field">
+  <label>
+    <span class="jrx-label">
+      {{label}}
+      {{#if required}}
+        <span class="jrx-required">*</span>
+      {{/if}}
+    </span>
+
+    <select
+      name="{{field}}"
+      class="jrx-select"
+      @change="{{onChange}}"
+      :required="{{required}}"
+      :disabled="{{disabled}}"
+    >
+      {{#if placeholder}}
+        <option value="" disabled selected hidden>{{placeholder}}</option>
+      {{/if}}
+
+      {{#each options as opt}}
+        <option value="{{opt.value}}">{{opt.label}}</option>
+      {{/each}}
+    </select>
+  </label>
+
+  {{#if helpText}}
+    <small class="jrx-help">{{helpText}}</small>
+  {{/if}}
+</div>
+```
+
+## Usage example
+
+```html template
+<JSelect
+  label="Status"
+  :field="form.status"
+  :options="statusOptions"
+  placeholder="Select a status"
+  required="true"
+  helpText="Choose the client's current status."
+/>
+```
+
+## Java integration example
+
+```java ClientsPage.java
+@Component
+@Route(path = "/clients")
+@Client
+public class ClientsPage extends AppPage {
+
+    @State public List<JSelect.Option> statusOptions = new ArrayList<>();
+    @State public Client form = new Client();
+
+    @Override
+    public void onInit() {
+        // Build options once at page init
+        this.statusOptions = JSelect.from("Active", "Inactive");
+        this.form.setStatus("Active"); // pre-select default
+    }
+
+    @Call
+    public void save(Client form) {
+        service.save(form);
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <JForm onSubmit="save(form)">
+              <JSelect
+                label="Status"
+                :field="form.status"
+                :options="statusOptions"
+                placeholder="Select a status"
+                required="true"
+              />
+            </JForm>
+        """;
+    }
+}
+```
+
+<Warning>
+The selected value is resolved from the form object's field at the time the `@Call` is invoked — there is no two-way client binding. The `name` attribute set via `field` ensures the browser includes the value in the submitted form data.
+</Warning>

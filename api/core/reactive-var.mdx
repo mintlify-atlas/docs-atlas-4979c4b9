@@ -1,0 +1,173 @@
+---
+title: ReactiveVar<T>
+description: A thread-safe observable value container. When its value changes, all registered listeners are notified — driving JReactive's state-to-browser synchronization.
+---
+
+`ReactiveVar<T>` is the reactive primitive that powers JReactive's live state synchronization. It holds a single value and fires registered `Consumer<T>` listeners whenever that value is updated via `set()`.
+
+Fields annotated with `@Bind` or `@State` on an `HtmlComponent` subclass are automatically wrapped in (or treated as) a `ReactiveVar` during binding initialization.
+
+## Class signature
+
+```java ReactiveVar.java
+public final class ReactiveVar<T> implements java.io.Serializable {
+    public ReactiveVar(T initial) { ... }
+    public T get() { ... }
+    public void set(T newValue) { ... }
+    public Runnable onChange(Consumer<T> listener) { ... }
+    public void clearListeners() { ... }
+    public void setActiveGuard(BooleanSupplier guard) { ... }
+}
+```
+
+## Thread safety
+
+Listeners are stored in a `CopyOnWriteArrayList`. This means:
+- Iterating listeners during `set()` is lock-free and safe for concurrent reads.
+- Adding or removing listeners involves a copy, which is acceptable because listener lists rarely change at high frequency.
+- The value field itself is **not** atomic. If you need CAS semantics, use the `StateStore.replace()` method instead.
+
+---
+
+## Constructor
+
+### `ReactiveVar(T initial)`
+
+Creates a new reactive container holding the provided initial value.
+
+<ParamField path="initial" type="T" required>
+  The starting value. May be `null`.
+</ParamField>
+
+```java
+ReactiveVar<String> name = new ReactiveVar<>("Alice");
+ReactiveVar<Integer> count = new ReactiveVar<>(0);
+```
+
+---
+
+## Methods
+
+### `get()`
+
+Returns the current value without triggering any listeners.
+
+<ResponseField name="return" type="T">
+  The current value held by this container.
+</ResponseField>
+
+```java
+String current = name.get(); // "Alice"
+```
+
+---
+
+### `set(T newValue)`
+
+Updates the stored value and fires all registered listeners — provided the `activeGuard` returns `true`.
+
+If the `activeGuard` returns `false` (i.e., the owning component is `UNMOUNTED`), the value is still updated in memory but no listeners are invoked. This prevents spurious WebSocket pushes for components that are not active.
+
+<ParamField path="newValue" type="T" required>
+  The new value to store and broadcast to listeners.
+</ParamField>
+
+```java
+name.set("Bob"); // Stores "Bob" and fires all onChange listeners
+```
+
+---
+
+### `onChange(Consumer<T> listener)`
+
+Registers a listener that is called every time `set()` fires with the new value. Returns a `Runnable` that removes the listener when invoked.
+
+<ParamField path="listener" type="Consumer<T>" required>
+  A callback that receives the new value each time it changes.
+</ParamField>
+
+<ResponseField name="return" type="Runnable">
+  A removal handle. Call `run()` on the returned `Runnable` to deregister the listener.
+</ResponseField>
+
+```java
+ReactiveVar<Integer> count = new ReactiveVar<>(0);
+
+// Register a listener
+Runnable unsubscribe = count.onChange(newVal -> {
+    System.out.println("Count changed to: " + newVal);
+});
+
+count.set(1); // prints "Count changed to: 1"
+
+// Remove the listener later
+unsubscribe.run();
+count.set(2); // nothing printed
+```
+
+---
+
+### `clearListeners()`
+
+Removes all registered listeners at once. This is called automatically by the framework during `onUnmount()` to prevent stale callbacks from firing after a component is deactivated.
+
+```java
+// Called internally during component unmount:
+rx.clearListeners();
+```
+
+<Warning>Calling `clearListeners()` on a shared `ReactiveVar` removes all observers, including those registered by the framework. Only call this manually if you own the `ReactiveVar` exclusively.</Warning>
+
+---
+
+### `setActiveGuard(BooleanSupplier guard)`
+
+Attaches a condition that gates listener invocation. When the guard returns `false`, calling `set()` updates the stored value but does not fire any listeners.
+
+<ParamField path="guard" type="BooleanSupplier" required>
+  A boolean supplier evaluated on every `set()` call. Pass `null` to reset to the always-true default.
+</ParamField>
+
+<Info>This method is used internally by the framework. For each `@Bind` or `@State` field, the guard is set to `() -> _state() == ComponentState.MOUNTED` so that state pushes are automatically suppressed while the component is unmounted.</Info>
+
+```java
+// Framework usage (internal)
+rx.setActiveGuard(() -> _state() == ComponentState.MOUNTED);
+```
+
+---
+
+## The `genericType` field
+
+`ReactiveVar` stores a `java.lang.reflect.Type` representing the real generic type of its value. This is populated by the framework using reflection when building bindings:
+
+```java
+rx.setGenericType(extractRealType(field.getGenericType()));
+```
+
+This allows the JSON serializer to correctly encode complex generics such as `List<UserData>` when sending state diffs over WebSocket, without losing type information through erasure.
+
+---
+
+## Usage with `@Bind`
+
+You can declare a `ReactiveVar<T>` directly as a field:
+
+```java ClockLeaf.java
+public class ClockLeaf extends HtmlComponent {
+
+    @Bind public ReactiveVar<String> clock = new ReactiveVar<>("--:--:--");
+
+    @Override
+    protected void onMount() {
+        timer = new java.util.Timer(true);
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override public void run() {
+                clock.set(java.time.LocalTime.now().withNano(0).toString());
+            }
+        }, 1000, 1000);
+    }
+}
+```
+
+Alternatively, use the [`Type<T>`](/api/core/type) wrapper for a more concise syntax.

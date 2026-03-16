@@ -1,0 +1,111 @@
+---
+title: "@Call"
+description: "Exposes a Java method so it can be invoked from browser events such as @click and @input in the HTML template."
+---
+
+`@Call` makes a component method callable from the client template via event binding syntax (e.g., `@click="increment()"`). When the browser event fires, the JReactive runtime sends a WebSocket message to the server, which executes the method on the correct component instance and then pushes any resulting state changes back to the DOM.
+
+## Target
+
+`METHOD`
+
+## Attributes
+
+<ParamField path="sync" type="boolean" default="true">
+  When `true` (the default), the method runs synchronously and the browser waits for the server response before unblocking further events. Set to `false` to allow the browser to continue dispatching events while the server processes the call asynchronously.
+</ParamField>
+
+## Usage
+
+### Basic event handler
+
+```java BaseCounter.java
+public abstract class BaseCounter extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+        // @Call automatically triggers a state update after the method returns
+    }
+
+    @Call
+    public void reset() {
+        count = 0;
+    }
+}
+```
+
+```html template
+<button @click="increment()">+1</button>
+<button @click="reset()">Reset</button>
+```
+
+### Bean Validation with `@Valid`
+
+You can annotate a method parameter with `@Valid` (from Jakarta Bean Validation) to validate a form object before the method body runs. If validation fails, JReactive's `CallGuard` intercepts the call and returns a structured validation-error response to the browser — the method body is never entered.
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    public static class SignupForm implements Serializable {
+
+        @NotBlank(message = "Name is required")
+        public String name;
+
+        @NotBlank(message = "Email is required")
+        @Email(message = "Email format is invalid")
+        public String email;
+
+        @NotBlank(message = "Password is required")
+        @Size(min = 8, message = "Password must be at least 8 characters")
+        public String password;
+    }
+
+    @State
+    PageState state = new PageState();
+
+    // register() is only called when SignupForm passes all constraints
+    @Call
+    public void register(@Valid SignupForm form) {
+        state.lastMessage = "User " + form.name + " registered successfully";
+        updateState("state");
+    }
+
+    // validar() runs on every keystroke to give real-time feedback
+    @Call
+    public void validar(@Valid SignupForm form) {
+        // If validation fails, CallGuard returns errors — this body is skipped
+    }
+}
+```
+
+```html template
+<input type="text" @input="validar(form)" name="form.name">
+<input type="email" @input="validar(form)" name="form.email">
+<input type="password" @input="validar(form)" name="form.password">
+<button type="button" @click="register(form)">Sign up</button>
+```
+
+### Async call
+
+Set `sync = false` to fire-and-forget. The browser does not wait for a reply, which is useful for non-critical side effects such as logging or analytics.
+
+```java
+@Call(sync = false)
+public void logActivity(String eventName) {
+    auditLog.record(eventName);
+}
+```
+
+## Notes
+
+- After a `@Call` method returns, JReactive automatically calls `updateState()` for all `@State` and `@Bind` fields that have changed since the method started. You only need to call `updateState("fieldName")` explicitly when you modify a POJO's nested properties.
+- `@Call` methods run on virtual threads (Project Loom) when the JVM supports them, enabling high concurrency without blocking carrier threads.
+- Parameters other than `@Valid`-annotated DTOs must match template argument names. Use flat POJOs or primitives; complex nested graphs are not supported as call arguments.
+- Only `public` methods can be annotated with `@Call`.

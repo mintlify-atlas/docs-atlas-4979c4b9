@@ -1,0 +1,83 @@
+---
+title: "Introduction"
+description: "JReactive is a Java framework for building reactive, component-based web UIs — entirely on the server, without writing JavaScript."
+---
+
+JReactive lets you define interactive web interfaces in pure Java. Components render HTML on the server, and a lightweight WebSocket runtime keeps the browser in sync with your Java state in real time. You write Java; JReactive handles the rest.
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first reactive component in minutes.
+  </Card>
+  <Card title="Installation" icon="download" href="/installation">
+    Add JReactive to Spring Boot or a standalone project.
+  </Card>
+</CardGroup>
+
+## What problem does it solve?
+
+Modern web UI frameworks require you to maintain two separate codebases: a server-side application and a JavaScript frontend. State must be duplicated, serialized, and kept in sync between them.
+
+JReactive collapses this into a single Java codebase. Your component is a plain Java class. Its fields are your state. Its HTML template is your view. When a user clicks a button, JReactive invokes your Java method over WebSocket and pushes only the changed parts of the DOM back to the browser — no full-page reload, no REST endpoint, no client-side state management.
+
+## Core concepts
+
+**Components** are Java classes that extend `HtmlComponent`. Each component owns its state and defines its HTML template.
+
+**State** fields are annotated with `@State`. JReactive tracks them and sends diffs to the browser whenever they change.
+
+**Actions** are methods annotated with `@Call`. They are invoked from the browser using event bindings like `@click="increment()"`.
+
+**Routes** map a component class to a URL using `@Route(path = "/my-page")`.
+
+## How it differs from other approaches
+
+| | JReactive | React/Vue | Vaadin | HTMX |
+|---|---|---|---|---|
+| Language | Java only | JavaScript | Java + GWT | Any + JS |
+| State location | Server | Client | Server | Server |
+| Transport | WebSocket | — | WebSocket | HTTP |
+| Compile-time optimization | APT processor | Bundler | GWT compiler | None |
+| Spring Boot integration | Native starter | Manual | Native | Manual |
+
+JReactive is closest in spirit to Vaadin and Phoenix LiveView, but uses a lightweight template syntax (double-mustache `{{field}}` bindings and `@event` handlers) rather than a full component DSL or custom widget set.
+
+## Module structure
+
+<CardGroup cols={2}>
+  <Card title="jreactive-core" icon="cube">
+    Base classes and annotations: `HtmlComponent`, `@State`, `@Bind`, `@Call`, `@Route`. No framework dependencies.
+  </Card>
+  <Card title="jreactive-apt" icon="gear">
+    Annotation processor. Runs at compile time to generate `ComponentAccessor` implementations — scoped CSS injection and AOT rendering metadata.
+  </Card>
+  <Card title="jreactive-runtime-jvm" icon="server">
+    Server-side rendering engine, component tree management, WebSocket message handling, and state diffing.
+  </Card>
+  <Card title="jreactive-runtime-js" icon="code">
+    The browser-side runtime (`jreactive-runtime.js`). Manages the WebSocket connection, applies DOM patches, and dispatches `@call` events.
+  </Card>
+  <Card title="jreactive-starter-spring" icon="leaf">
+    Spring Boot auto-configuration. Registers `PageResolver`, `JrxHubManager`, `CallGuard`, and a default `CaffeineStateStore` with zero configuration.
+  </Card>
+  <Card title="jreactive-standalone" icon="plug">
+    Undertow-based standalone server. Run JReactive without Spring Boot using `JReactiveServer`.
+  </Card>
+  <Card title="jreactive-store-redis" icon="database">
+    Redis state store for distributed deployments. Supports `json` and `fst` serialization strategies and `strong`/`eventual` consistency modes.
+  </Card>
+  <Card title="jreactive-ui" icon="puzzle-piece">
+    Built-in component library: `JButton`, `JInput`, `JForm`, `JSelect`, `JCheckbox`, `JTable`, `JCard`, `JModal`, and `Link`.
+  </Card>
+</CardGroup>
+
+## Who is JReactive for?
+
+JReactive is a good fit if you:
+
+- Are a Java team that wants interactive UIs without adopting a JavaScript ecosystem
+- Are building internal tools, admin panels, or data-heavy dashboards where real-time feedback matters
+- Want to colocate UI logic with your domain model without a REST or GraphQL layer in between
+- Are already using Spring Boot and want to add reactive UI with minimal new concepts
+
+It is less suited for applications that require rich client-side interactivity while offline, heavy animation choreography, or deep integration with existing JavaScript component libraries.

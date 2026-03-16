@@ -1,0 +1,199 @@
+---
+title: 'DOM modes'
+description: 'Choose between CLIENT_MANAGED and SERVER_OWNED DOM update strategies to match your performance and complexity needs.'
+keywords: ['dom modes', 'client managed', 'server owned', 'idiomorph', 'html on the wire', 'server-side rendering']
+---
+
+JReactive supports two distinct strategies for keeping the browser DOM in sync with server state. You select the strategy per component using the `@DomMode` annotation.
+
+<CardGroup cols={2}>
+  <Card title="CLIENT_MANAGED" icon="display">
+    Default mode. The server sends JSON state deltas over WebSocket. The browser JS runtime diffs the state and updates the DOM using pre-compiled HTML templates.
+  </Card>
+  <Card title="SERVER_OWNED" icon="server">
+    The server renders complete HTML fragments and pushes them over WebSocket. The browser uses [idiomorph](https://github.com/bigskysoftware/idiomorph) to morph the live DOM to match.
+  </Card>
+</CardGroup>
+
+## The `@DomMode` annotation
+
+Apply `@DomMode` at the class level on any `HtmlComponent`. If you omit it, the component defaults to `CLIENT_MANAGED`.
+
+```java ClientManagedPage.java
+import com.ciro.jreactive.annotations.DomMode;
+import com.ciro.jreactive.JrxDomMode;
+
+// Explicit — same as omitting the annotation
+@DomMode(JrxDomMode.CLIENT_MANAGED)
+public class ClientManagedPage extends HtmlComponent {
+    // ...
+}
+```
+
+```java ServerOwnedPage.java
+import com.ciro.jreactive.annotations.DomMode;
+import com.ciro.jreactive.JrxDomMode;
+
+@DomMode(JrxDomMode.SERVER_OWNED)
+public class ServerOwnedPage extends HtmlComponent {
+    // ...
+}
+```
+
+### `JrxDomMode` enum
+
+| Value | Description |
+|---|---|
+| `CLIENT_MANAGED` | Browser JS manages DOM via JSON state deltas and HTML templates. |
+| `SERVER_OWNED` | Server renders final HTML fragments and sends them for idiomorph to morph into place. |
+
+## CLIENT_MANAGED (default)
+
+In `CLIENT_MANAGED` mode, the server sends the initial page HTML with embedded `<template>` blueprints for conditional blocks (`{{#if}}`) and loops (`{{#each}}`). After that, only JSON state deltas travel over the WebSocket. The browser runtime interprets the deltas and updates the DOM by cloning and populating those template blueprints.
+
+**What the server sends on state change:**
+```json
+{"seq": 42, "batch": [{"k": "counter", "v": 7}]}
+```
+
+The browser receives the key–value pair, finds all DOM nodes bound to `counter`, and updates them without touching the rest of the page.
+
+**How templates are preserved in the HTML output:**
+
+For reactive text nodes, the engine emits HTML comments to preserve the original template expression alongside the resolved value:
+```html
+<!--jrx:{{page_counter.counter}}-->7
+```
+
+For `{{#if}}` and `{{#each}}` blocks, the engine emits `<template data-if="...">` and `<template data-each="...">` elements that the JS runtime uses to clone and re-render sections when the referenced state changes.
+
+## SERVER_OWNED
+
+In `SERVER_OWNED` mode, the Java engine evaluates all template expressions — including `{{#if}}` branches and `{{#each}}` loops — on the server. It produces a complete, clean HTML fragment with no template comments or `<template>` placeholders. When state changes, the server re-renders the fragment and pushes the new HTML over WebSocket. The browser's idiomorph library morphs the live DOM to match the new HTML with minimal node replacement.
+
+**What the server sends on state change:**
+```html
+<div style="padding: 40px;">
+  <h2>Counter: <span style="color: #007bff;">7</span></h2>
+  <div style="background: #d4edda;">Secret revealed!</div>
+  ...
+</div>
+```
+
+### idiomorph.min.js
+
+When JReactive detects a `SERVER_OWNED` component, it automatically injects `idiomorph.min.js` into the page. idiomorph performs intelligent DOM morphing — it matches existing nodes by identity rather than replacing them wholesale, which preserves focus state, CSS transitions, and scroll position across updates.
+
+<Note>
+You do not need to include idiomorph manually. JReactive bundles it and injects the script only when a `SERVER_OWNED` component is present on the page.
+</Note>
+
+### Real example: ServerOwnedTestPage
+
+The following example from the demo shows a complete `SERVER_OWNED` page. Notice that `{{#if}}`, `{{#each}}`, and `{{counter}}` are all resolved server-side — the browser receives pure HTML:
+
+```java ServerOwnedTestPage.java
+package com.ciro.jreactive;
+
+import com.ciro.jreactive.annotations.Call;
+import com.ciro.jreactive.annotations.DomMode;
+import com.ciro.jreactive.annotations.Stateless;
+import com.ciro.jreactive.router.Route;
+import java.util.ArrayList;
+import java.util.List;
+
+@Route(path = "/server-owned")
+@DomMode(JrxDomMode.SERVER_OWNED)
+@Stateless
+public class ServerOwnedTestPage extends AppPage {
+
+    @State public int counter = 0;
+    @State public boolean showSecret = false;
+    @State public List<String> logs = new ArrayList<>(List.of("Inicio del servidor"));
+
+    @Call
+    public void interact() {
+        counter++;
+        showSecret = !showSecret;
+        logs.add("Interacción #" + counter + " procesada en Java");
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="padding: 40px; font-family: sans-serif; max-width: 600px; margin: 0 auto;">
+                <h1>HTML On-The-Wire test</h1>
+                <h2>Counter: <span style="color: #007bff;">{{counter}}</span></h2>
+
+                {{#if showSecret}}
+                    <div style="background: #d4edda;">Secret revealed by the server!</div>
+                {{/if}}
+                {{#if !showSecret}}
+                    <div style="background: #f8d7da;">Secret is hidden</div>
+                {{/if}}
+
+                <button @click="interact()">Interact with the server</button>
+
+                <ul>
+                    {{#each logs as log}}
+                        <li>> {{log}}</li>
+                    {{/each}}
+                </ul>
+            </div>
+        """;
+    }
+}
+```
+
+When a user clicks the button, the server calls `interact()`, increments `counter`, toggles `showSecret`, appends a log entry, and then re-renders the entire component tree into HTML. That HTML is pushed over the WebSocket and idiomorph morphs the DOM in-place.
+
+## How the engine detects SERVER_OWNED at render time
+
+The `AstComponentEngine` checks for the annotation at the start of each render and routes template processing accordingly:
+
+```java AstComponentEngine.java
+boolean isServerOwned = ctx.getClass().isAnnotationPresent(DomMode.class) &&
+    ctx.getClass().getAnnotation(DomMode.class).value() == JrxDomMode.SERVER_OWNED;
+```
+
+With `isServerOwned = true`:
+- `IfNode` conditions are evaluated immediately in Java. Only the matching branch is rendered.
+- `EachNode` lists are iterated in Java. Each item gets a `TemplateContext` child with its loop variable populated.
+- Text nodes with `{{...}}` are resolved and emitted directly — no `<!--jrx:...-->` comment wrapper.
+
+## Choosing a mode
+
+<Tabs>
+  <Tab title="Use CLIENT_MANAGED when">
+    - You want minimal bandwidth for frequent state updates (only key–value deltas travel after initial load).
+    - Your page has many small, independent reactive fields.
+    - You need the lowest possible round-trip latency for high-frequency updates (e.g., dashboards, live counters).
+    - You are combining SSR components with `@Client` (CSR) components on the same page.
+  </Tab>
+  <Tab title="Use SERVER_OWNED when">
+    - Your page state involves complex conditional logic that is difficult to express cleanly as client-side template directives.
+    - You want absolute simplicity: no template comments, no `<template>` tags, and a DOM that is a direct mirror of what the server computes.
+    - You are building pages where accessibility or HTML correctness is paramount and you want to avoid any hidden markup.
+    - You are combining JReactive with server-generated partial HTML from other sources.
+  </Tab>
+</Tabs>
+
+<Warning>
+`SERVER_OWNED` re-renders the full component HTML on every state change and sends it over the WebSocket. For components with large output or very high update frequency, this can increase bandwidth and CPU usage compared to `CLIENT_MANAGED`. Benchmark before committing to `SERVER_OWNED` on high-traffic pages.
+</Warning>
+
+## Combining modes in a page tree
+
+You can mix modes across the component tree. A root page can be `CLIENT_MANAGED` while a child leaf component is `SERVER_OWNED`, or vice versa. The engine checks each component's own annotation independently at render time.
+
+```java
+@Route(path = "/dashboard")
+public class DashboardPage extends HtmlComponent {
+    // CLIENT_MANAGED by default
+}
+
+@DomMode(JrxDomMode.SERVER_OWNED)
+public class ComplexReportWidget extends HtmlComponent {
+    // This child renders as full HTML on every change
+}
+```

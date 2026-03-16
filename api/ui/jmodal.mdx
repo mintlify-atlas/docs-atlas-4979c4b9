@@ -1,0 +1,165 @@
+---
+title: JModal
+description: A reactive overlay modal controlled by a boolean visibility flag, with a title, close event callback, and a slot for body content.
+---
+
+## Overview
+
+`JModal` renders a full-screen backdrop with a centred dialog panel. Visibility is controlled entirely by the `visible` boolean — the modal is not rendered at all when `visible` is `false`, keeping the DOM clean. The `title` is displayed in the modal header alongside a close button wired to the `onClose` callback.
+
+Modal body content is placed via the default `<slot />`. The parent component is responsible for toggling `visible` through `@Call` methods and WebSocket state synchronization.
+
+<Warning>
+`JModal` uses `client:mount` and `client:unmount` lifecycle directives to lock and restore `document.body.style.overflow` when the modal opens and closes. Avoid nesting multiple open modals simultaneously.
+</Warning>
+
+## Properties
+
+<ParamField path="visible" type="boolean" default="false">
+  `@Bind` — Controls whether the modal is rendered. Set to `true` from a `@Call` method to open the modal; set to `false` to close it. The modal DOM is completely absent when `false`.
+</ParamField>
+
+<ParamField path="title" type="string" default="Mensaje del Sistema">
+  `@Bind` — The heading text shown in `<div class="jrx-modal-header">`.
+</ParamField>
+
+<ParamField path="onClose" type="string"  default="(empty)">
+  `@Bind` — A `@Call` expression invoked when the user clicks the `×` close button in the header, e.g. `"closeModal()"`.
+</ParamField>
+
+## Template output
+
+```html template
+<div style="display: contents;">
+  {{#if visible}}
+    <div class="jrx-modal-backdrop"
+         client:mount="document.body.style.overflow='hidden'"
+         client:unmount="document.body.style.overflow=''">
+
+      <div class="jrx-modal-content">
+        <div class="jrx-modal-header">
+          <strong>{{title}}</strong>
+          <button
+            @click="{{onClose}}"
+            style="border:none; background:none; cursor:pointer; font-size:20px;"
+          >&times;</button>
+        </div>
+        <div class="jrx-modal-body">
+          <slot />
+        </div>
+      </div>
+
+    </div>
+  {{/if}}
+</div>
+```
+
+## Usage example
+
+The following pattern from `ModalTestPage.java` shows the minimal open/close cycle:
+
+```html template
+<button @click="openModal()">
+  Open modal
+</button>
+
+<JModal title="Confirmation required" :visible="isModalOpen" onClose="closeModal()">
+  <p>Are you sure you want to proceed?</p>
+  <div style="margin-top: 20px; display: flex; gap: 10px; justify-content: flex-end;">
+    <button @click="closeModal()">Cancel</button>
+    <button @click="confirm()">Confirm</button>
+  </div>
+</JModal>
+```
+
+## Java integration example
+
+The following is adapted from `ModalTestPage.java` in the demo application.
+
+```java ModalTestPage.java
+@Route(path = "/modal-test")
+public class ModalTestPage extends AppPage {
+
+    @State public String status = "Waiting...";
+    @State public boolean isModalOpen = false;
+
+    @Call
+    public void openModal() {
+        this.isModalOpen = true;
+    }
+
+    @Call
+    public void closeModal() {
+        this.isModalOpen = false;
+    }
+
+    @Call
+    public void confirm() {
+        this.status = "Action confirmed from modal!";
+        this.isModalOpen = false;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="padding: 50px; text-align: center;">
+              <p>Status: <strong>{{status}}</strong></p>
+
+              <button @click="openModal()">
+                Open modal
+              </button>
+
+              <JModal
+                title="Confirmation required"
+                :visible="isModalOpen"
+                onClose="closeModal()"
+              >
+                <p>Are you sure you want to proceed?</p>
+                <div style="margin-top: 20px; display: flex; gap: 10px;">
+                  <button @click="closeModal()">Cancel</button>
+                  <button @click="confirm()">Confirm</button>
+                </div>
+              </JModal>
+            </div>
+        """;
+    }
+}
+```
+
+### CRUD dialog pattern
+
+For full create/edit dialogs, combine `JModal` with `JForm` and `JInput`. Adapted from `ClientsPage.java`:
+
+```java ClientsPage.java
+@Call
+public void openCreate() {
+    this.form = new Client();
+    this.modalTitle = "New client";
+    this.isModalOpen = true;
+}
+
+@Call
+public void closeModal() {
+    this.isModalOpen = false;
+}
+
+@Call
+public void save(Client form) {
+    service.save(form);
+    this.clients = service.findAll();
+    this.isModalOpen = false;
+}
+```
+
+```html template
+<JModal :title="modalTitle" :visible="isModalOpen" onClose="closeModal()">
+  <JForm onSubmit="save(form)">
+    <JInput label="Name"  :field="form.name"  required="true" />
+    <JInput label="Email" :field="form.email" type="email" required="true" />
+  </JForm>
+</JModal>
+```
+
+<Tip>
+Because `visible` is a `@Bind` field, the parent drives open/close state through normal `@State` fields and `@Call` methods. There is no client-side imperative API — the modal appears and disappears reactively when JReactive pushes WebSocket diffs.
+</Tip>

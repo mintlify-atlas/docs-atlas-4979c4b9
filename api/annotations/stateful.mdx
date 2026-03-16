@@ -1,0 +1,63 @@
+---
+title: "@Stateful"
+description: "Marks a component for serialization to the external state store (Redis by default). Component state survives JVM restarts and is shared across cluster nodes."
+---
+
+`@Stateful` activates the distributed state persistence layer for a component. After each request cycle, the component is serialized and saved to the configured `StateStore` — typically Redis via the `jreactive-store-redis` module. On the next request from the same session, the component is deserialized and restored.
+
+## Target
+
+`TYPE`
+
+## Usage
+
+```java ProfilePage.java
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.annotations.Call;
+import com.ciro.jreactive.annotations.Stateful;
+import com.ciro.jreactive.router.Route;
+import java.io.Serializable;
+
+@Route(path = "/profile")
+@Stateful
+public class ProfilePage extends HtmlComponent implements Serializable {
+
+    @State
+    public String username = "";
+
+    @State
+    public int loginCount = 0;
+
+    @Call
+    public void loadProfile(String userId) {
+        // State persists across requests and JVM restarts
+        loginCount++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <p>Welcome, {{username}}</p>
+            <p>Login count: {{loginCount}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+## Choosing a state mode
+
+| Annotation | Storage | Shared across nodes | Survives restart |
+|------------|---------|---------------------|------------------|
+| `@Stateful` | Redis (external) | Yes | Yes |
+| `@StatefulRam` | JVM heap | No | No |
+| `@Stateless` | Signed HTML token | N/A | Yes |
+| `@Client` | Browser | N/A | No |
+
+## Notes
+
+- The component class **and all of its `@State` fields** must implement `java.io.Serializable`. Non-serializable fields (e.g., database connections, timers) must be marked `transient`.
+- Requires the `jreactive-store-redis` dependency to be present at runtime. Without it, JReactive falls back to in-memory storage and logs a warning.
+- Serialization format defaults to Java object serialization. For cross-language compatibility or schema evolution, configure a custom `StateSerializer` bean.
+- Do not combine `@Stateful` with `@StatefulRam` or `@Stateless` on the same class — only one state mode annotation is allowed per component.

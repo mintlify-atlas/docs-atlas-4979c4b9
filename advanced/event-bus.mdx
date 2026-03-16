@@ -1,0 +1,263 @@
+---
+title: 'Event bus'
+description: 'Use the in-process EventBus for decoupled cross-component communication, and JrxPushHub for pushing state updates to connected browser sessions.'
+keywords: ['event bus', 'cross-component', 'pub sub', 'push hub', 'websocket', 'state push']
+---
+
+JReactive provides two complementary mechanisms for communicating across the component boundary:
+
+- **`EventBus`** — an in-process, thread-safe publish/subscribe bus for Java-to-Java communication within the same JVM.
+- **`JrxPushHub`** — the WebSocket hub that pushes reactive state updates from the server to connected browser sessions.
+
+Understanding the difference between these two is key to building clean, decoupled JReactive applications.
+
+## EventBus
+
+`EventBus` is a lightweight, synchronous, in-memory publish/subscribe mechanism. It is designed for coordinating loosely coupled Java components within the same JVM process — not for sending data to the browser.
+
+### Implementation
+
+```java EventBus.java
+public class EventBus {
+    private final Map<String, List<Consumer<Object>>> map = new ConcurrentHashMap<>();
+
+    public <T> void on(String event, Consumer<T> handler) {
+        map.computeIfAbsent(event, __ -> new CopyOnWriteArrayList<>())
+           .add((Consumer<Object>) handler);
+    }
+
+    public void emit(String event, Object payload) {
+        map.getOrDefault(event, List.of()).forEach(h -> h.accept(payload));
+    }
+}
+```
+
+The backing data structures are `ConcurrentHashMap` and `CopyOnWriteArrayList`, making `on()` and `emit()` safe for concurrent access from multiple threads without additional synchronization.
+
+### API
+
+| Method | Description |
+|---|---|
+| `on(String event, Consumer<T> handler)` | Register a typed handler for the named event. Multiple handlers per event are supported. |
+| `emit(String event, Object payload)` | Fire the event synchronously, invoking all registered handlers in registration order. |
+
+### Registering handlers
+
+Subscribe to an event by calling `on()` with the event name and a handler lambda. The type parameter `T` should match the payload type you expect `emit()` to provide:
+
+```java
+EventBus bus = new EventBus();
+
+// Handler that receives a String payload
+bus.on("user.logout", (String sessionId) -> {
+    System.out.println("User logged out: " + sessionId);
+});
+
+// Handler that receives a custom record
+bus.on("order.placed", (Order order) -> {
+    notificationService.send(order.userId(), "Your order has been placed.");
+});
+```
+
+### Emitting events
+
+Call `emit()` from anywhere that has a reference to the same `EventBus` instance. All handlers registered under that event name are called synchronously on the calling thread:
+
+```java
+bus.emit("user.logout", session.getId());
+bus.emit("order.placed", new Order(userId, items));
+```
+
+### Injecting EventBus into components
+
+In a Spring Boot application, declare `EventBus` as a `@Bean` and inject it into your components:
+
+```java AppConfig.java
+@Configuration
+public class AppConfig {
+
+    @Bean
+    public EventBus eventBus() {
+        return new EventBus();
+    }
+}
+```
+
+JReactive components are plain Java objects, not Spring-managed beans. To use the bus inside a component, pass it in via constructor or a static accessor:
+
+```java OrdersPage.java
+public class OrdersPage extends HtmlComponent {
+
+    private final EventBus bus;
+
+    @State public int pendingCount = 0;
+
+    public OrdersPage(EventBus bus) {
+        this.bus = bus;
+    }
+
+    @Override
+    public void onInit() {
+        bus.on("order.placed", (Order order) -> {
+            pendingCount++;
+            updateState("pendingCount");
+        });
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div>
+              <p>Pending orders: <strong>{{pendingCount}}</strong></p>
+            </div>
+        """;
+    }
+}
+```
+
+<Note>
+Register `EventBus` handlers in `onInit()`, not in `onMount()`. `onInit()` is called exactly once per component instance, even after deserialization from Redis. This prevents duplicate handler registrations when a component is remounted.
+</Note>
+
+### Cross-component communication pattern
+
+A common pattern is to have one component emit an event and another component react to it:
+
+```java CheckoutPage.java
+@Route(path = "/checkout")
+public class CheckoutPage extends HtmlComponent {
+
+    private final EventBus bus;
+
+    public CheckoutPage(EventBus bus) {
+        this.bus = bus;
+    }
+
+    @Call
+    public void submitOrder() {
+        Order order = buildOrder();
+        orderService.save(order);
+
+        // Notify other components in this process
+        bus.emit("order.placed", order);
+    }
+
+    // ...
+}
+```
+
+```java CartBadge.java
+public class CartBadge extends HtmlComponent {
+
+    private final EventBus bus;
+
+    @State public int orderCount = 0;
+
+    public CartBadge(EventBus bus) {
+        this.bus = bus;
+    }
+
+    @Override
+    public void onInit() {
+        bus.on("order.placed", (Order order) -> {
+            orderCount++;
+            updateState("orderCount");
+        });
+    }
+
+    @Override
+    protected String template() {
+        return "<span class=\"badge\">{{orderCount}}</span>";
+    }
+}
+```
+
+### EventBus scope and limitations
+
+<Warning>
+The `EventBus` is strictly in-process. It does not cross JVM boundaries. If you run multiple instances of your application (e.g., behind a load balancer), events emitted on one node are not seen by components on other nodes. For multi-node broadcasting, use `JrxMessageBroker` (provided by the `HybridStateStore` Redis configuration).
+</Warning>
+
+- There is no built-in unsubscription mechanism on `EventBus`. Handlers registered with `on()` live as long as the `EventBus` instance itself.
+- Handlers execute synchronously on the thread that calls `emit()`. Long-running handlers will block the caller.
+- There is no dead-letter queue, retry logic, or delivery guarantee. If a handler throws, the exception propagates to the `emit()` caller.
+
+## JrxPushHub and WebSocket delivery
+
+`JrxPushHub` is the bridge between server-side reactive state and the connected browser session. It is not a general-purpose event bus — it is dedicated to delivering state change notifications to the browser over WebSocket.
+
+### How state reaches the browser
+
+When you call `updateState("fieldName")` in a component or mutate a reactive variable, the change propagates through the following chain:
+
+1. `ReactiveVar.set()` fires its `onChange` listeners.
+2. `JrxPushHub` has subscribed to those listeners at connection time.
+3. `JrxPushHub.onSnapshot()` encodes the key–value pair and calls `pushToBuffer()`.
+4. `pushToBuffer()` appends the message to a ring buffer and calls `broadcastToSinks()`.
+5. Each registered `JrxSink` (WebSocket session) receives the JSON message.
+
+The message format sent to the browser is:
+```json
+{"seq": 42, "batch": [{"k": "pendingCount", "v": 7}]}
+```
+
+### Sequence numbers and replay
+
+Every message pushed through `JrxPushHub` carries a monotonically increasing `seq` number. When a browser reconnects, it sends the sequence number of the last message it received. `JrxPushHub.poll(since)` replays any buffered messages with a sequence number greater than `since`, allowing seamless reconnection without a full page refresh.
+
+If the gap is too large (the client is too far behind), `poll()` falls back to sending a full snapshot of current state.
+
+```java JrxPushHub.java
+public Batch poll(long since) {
+    if (since <= 0) return snapshot();
+
+    long oldestAvailable = bufferSeq.isEmpty() ? seq.get() : bufferSeq.peek();
+    if (since < oldestAvailable - 1) return snapshot(); // Too far behind, send full snapshot
+
+    // Replay buffered messages
+    ...
+}
+```
+
+### Pushing state from outside a component
+
+You can push state changes directly through `JrxPushHub` from non-component code using `hub.set(key, value)`. This is useful when an external service (a scheduled job, a message consumer, etc.) needs to update the browser state for a specific session:
+
+```java ScheduledPriceUpdater.java
+@Component
+public class ScheduledPriceUpdater {
+
+    private final JrxHubManager hubManager;
+
+    @Scheduled(fixedRate = 5000)
+    public void broadcastPrices() {
+        Map<String, Double> prices = priceFeed.getLatest();
+
+        // Push to all sessions viewing the /prices page
+        for (String sessionId : activeSessions) {
+            JrxPushHub hub = hubManager.hub(sessionId, "/prices");
+            hub.set("page_prices.currentPrice", prices.get("BTC"));
+        }
+    }
+}
+```
+
+### EventBus vs. JrxPushHub
+
+<CardGroup cols={2}>
+  <Card title="EventBus" icon="arrows-left-right">
+    Java-to-Java, in-process only. Use for decoupled communication between components or services within the same JVM. The browser never sees these events directly.
+  </Card>
+  <Card title="JrxPushHub" icon="wifi">
+    Java-to-browser, per-session WebSocket delivery. Use for sending reactive state updates to a connected browser client. Handles sequencing, buffering, and reconnection.
+  </Card>
+</CardGroup>
+
+| Concern | EventBus | JrxPushHub |
+|---|---|---|
+| Recipients | Java handlers in the same JVM | Browser sessions via WebSocket |
+| Delivery | Synchronous | Async, buffered |
+| Scope | In-process | Per-session |
+| Multi-node | No (use `JrxMessageBroker` for that) | Yes, via `RedisMessageBroker` |
+| Replay / recovery | No | Yes, via sequence numbers |
+| Primary use case | Decouple Java components | Sync browser DOM with server state |

@@ -1,0 +1,398 @@
+---
+title: Spring Boot Integration
+description: Add JReactive to a Spring Boot project with full auto-configuration, routing, and WebSocket state synchronization.
+---
+
+This guide walks through everything needed to add JReactive to a Spring Boot application — from Maven dependencies to full CRUD pages.
+
+## Maven setup
+
+Add `jreactive-starter-spring` to your `pom.xml`. This single dependency pulls in the core engine, the Spring auto-configuration, and the JVM runtime.
+
+```xml pom.xml
+<dependencies>
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-starter-spring</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- Optional: built-in UI component library -->
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-ui</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+
+    <!-- JVM rendering runtime -->
+    <dependency>
+        <groupId>com.ciro</groupId>
+        <artifactId>jreactive-runtime-jvm</artifactId>
+        <version>0.0.1-SNAPSHOT</version>
+    </dependency>
+</dependencies>
+```
+
+You must also configure `maven-compiler-plugin` to run the annotation processor and pass `-parameters` so method parameter names are preserved at runtime:
+
+```xml pom.xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <configuration>
+        <source>21</source>
+        <target>21</target>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>com.ciro</groupId>
+                <artifactId>jreactive-apt</artifactId>
+                <version>0.0.1-SNAPSHOT</version>
+            </path>
+        </annotationProcessorPaths>
+        <fork>true</fork>
+        <compilerArgs>
+            <arg>--add-exports</arg>
+            <arg>jdk.compiler/com.sun.source.util=ALL-UNNAMED</arg>
+            <arg>--add-exports</arg>
+            <arg>jdk.compiler/com.sun.source.tree=ALL-UNNAMED</arg>
+            <arg>-parameters</arg>
+        </compilerArgs>
+    </configuration>
+</plugin>
+```
+
+## Auto-configuration
+
+The `jreactive-starter-spring` artifact ships a `JReactiveAutoConfiguration` class that registers all required beans automatically. You do not need to declare any of these yourself.
+
+| Bean | Type | Purpose |
+|---|---|---|
+| `stateStore` | `CaffeineStateStore` | In-memory per-session component state (overridable) |
+| `callGuard` | `CallGuard` | Validates `@Call` arguments via Bean Validation before dispatch |
+| `pageResolver` | `PageResolver` | Matches incoming request paths to route components |
+| `jrxHubManager` | `JrxHubManager` | Manages WebSocket sessions, state deltas, and push broadcasts |
+
+```java JReactiveAutoConfiguration.java
+@Configuration
+public class JReactiveAutoConfiguration {
+
+    @Bean
+    @ConditionalOnMissingBean(StateStore.class)
+    public StateStore stateStore() {
+        return new CaffeineStateStore();
+    }
+
+    @Bean
+    public CallGuard callGuard(Validator validator, ObjectMapper mapper) {
+        return new CallGuard(validator, mapper);
+    }
+
+    @Bean
+    public PageResolver pageResolver(RouteProvider routeProvider, StateStore store) {
+        return new PageResolver(routeProvider, store);
+    }
+
+    @Bean
+    public JrxHubManager jrxHubManager(
+            PageResolver pageResolver,
+            ObjectMapper mapper,
+            @Autowired(required = false) JrxMessageBroker broker) {
+        return new JrxHubManager(pageResolver, mapper, broker);
+    }
+}
+```
+
+<Note>
+The `StateStore` bean is `@ConditionalOnMissingBean`, so you can replace it by declaring your own `StateStore` bean — for example, the `RedisStateStore` from `jreactive-store-redis`.
+</Note>
+
+## WebSocket configuration
+
+The starter auto-registers a SockJS WebSocket handler at `/jrx`. It uses sticky sessions (via a session cookie) so that multi-instance deployments route the same user to the same node.
+
+```java WebSocketConfig.java
+@Configuration
+@EnableWebSocket
+public class WebSocketConfig implements WebSocketConfigurer {
+
+    @Override
+    public void registerWebSocketHandlers(WebSocketHandlerRegistry registry) {
+        registry.addHandler(delegator, "/jrx")
+                .addInterceptors(new PathInterceptor())
+                .setAllowedOriginPatterns("*")
+                .withSockJS()
+                .setSessionCookieNeeded(true); // required for sticky sessions in a cluster
+    }
+}
+```
+
+## application.yml properties
+
+JReactive reads its configuration from the `jreactive` namespace:
+
+```yaml application.yml
+jreactive:
+  store:
+    type: ram          # ram | redis | hybrid
+
+  ws:
+    persistent-state: true
+    enabled-backpressure: true
+    max-queue: 1024    # events buffered before back-pressure kicks in
+    flush-interval-ms: 16
+```
+
+For production with Redis, add a Spring profile:
+
+```yaml application.yml
+---
+spring:
+  config:
+    activate:
+      on-profile: prod
+  threads:
+    virtual:
+      enabled: true
+
+jreactive:
+  store:
+    type: hybrid
+    serialization: json  # json | fst
+    consistency: strong  # strong | eventual
+  redis:
+    host: localhost
+    port: 6379
+```
+
+## Defining routes
+
+JReactive discovers pages at startup by scanning the classpath for classes annotated with `@Route`.
+
+### Using `@Route`
+
+Annotate any `HtmlComponent` subclass with `@Route`. The `RouteRegistry` bean scans the package of your `@SpringBootApplication` class and registers every `@Route` it finds. Spring's `AutowireCapableBeanFactory` is used to instantiate each page, so `@Autowired` fields work normally even though the class does not need `@Component`.
+
+```java
+@Route(path = "/")
+public class HomePage extends HtmlComponent {
+
+    @State public String greeting = "Hello, World!";
+
+    @Override
+    protected String template() {
+        return "<h1>{{greeting}}</h1>";
+    }
+}
+```
+
+<Warning>
+At least one route mapped to `"/"` must exist. `RouteRegistry` throws `IllegalStateException` on startup if none is found.
+</Warning>
+
+### Path parameters
+
+Routes support named path segments. Parameters are matched and made available to the component via the `PathPattern` mechanism:
+
+```java
+@Route(path = "/products/:id")
+public class ProductPage extends HtmlComponent {
+    // path params are injected into @State fields by name
+    @State public String id = "";
+    ...
+}
+```
+
+## Bean Validation with `@Valid`
+
+When a `@Call` method declares a parameter annotated with `@Valid`, the `CallGuard` bean intercepts the call, runs the Bean Validation constraints defined on the DTO, and returns a structured validation error response to the client **without ever entering the method body**.
+
+The following example is taken directly from the demo `SignupPage`:
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+
+    public static class SignupForm implements Serializable {
+
+        @NotBlank(message = "El nombre es obligatorio")
+        public String name;
+
+        @NotBlank(message = "El correo es obligatorio")
+        @Email(message = "El correo no tiene un formato válido")
+        public String email;
+
+        @NotBlank(message = "La contraseña es obligatoria")
+        @Size(min = 8, message = "La contraseña debe tener al menos 8 caracteres")
+        public String password;
+    }
+
+    @State PageState state = new PageState();
+
+    @Call
+    public void register(@Valid SignupForm form) {
+        // Only reached when all constraints pass
+        state.lastMessage = "Usuario " + form.name + " registrado correctamente";
+        updateState("state");
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <section>
+              <h1>Registro con Bean Validation</h1>
+              <label>Nombre: <input type="text" name="form.name" @input="validar(form)"></label>
+              <label>Correo: <input type="email" name="form.email" @input="validar(form)"></label>
+              <label>Contraseña: <input type="password" name="form.password" @input="validar(form)"></label>
+              <button @click="register(form)">Registrarme</button>
+              <p data-if="state.lastMessage">{{state.lastMessage}}</p>
+            </section>
+            """;
+    }
+}
+```
+
+Input fields use `name="form.fieldName"` to bind values into the DTO. When the button fires `register(form)`, JReactive deserializes the collected field values into a `SignupForm` instance and passes it through `CallGuard` before invoking the method.
+
+## Complete CRUD example
+
+The following example from `jreactive-demo-spring` shows a full client management page with a modal form, a data table, and a Spring service.
+
+<Steps>
+
+<Step title="Create the service">
+
+```java ClientService.java
+@Service
+public class ClientService {
+
+    private final Map<String, Client_> db = new ConcurrentHashMap<>();
+
+    public List<Client_> findAll() {
+        return new ArrayList<>(db.values());
+    }
+
+    public void save(Client_ client) {
+        if (client.id == null || client.id.isBlank()) {
+            client.id = UUID.randomUUID().toString();
+        }
+        db.put(client.id, client);
+    }
+
+    public void delete(String id) {
+        db.remove(id);
+    }
+}
+```
+
+</Step>
+
+<Step title="Create the page component">
+
+```java ClientsPage.java
+@Component
+@Route(path = "/clients")
+@Client
+public class ClientsPage extends AppPage {
+
+    @Autowired
+    private transient ClientService service;
+
+    @State public List<Client_> clients = new ArrayList<>();
+    @State public Client_ form = new Client_();
+    @State public boolean isEditing = false;
+    @State public String modalTitle = "Nuevo Cliente";
+    @State public boolean isModalOpen = false;
+
+    @Bind public List<String> headers = List.of("Nombre", "Email", "Estado", "Acciones");
+    @State public List<JSelect.Option> statusOptions = new ArrayList<>();
+
+    @Override
+    public void onInit() {
+        this.clients = service.findAll();
+        this.statusOptions = JSelect.from("Activo", "Inactivo");
+        this.form.setStatus("Activo");
+    }
+
+    @Call
+    public void openCreate() {
+        this.form = new Client_();
+        this.form.setStatus("Activo");
+        this.isEditing = false;
+        this.modalTitle = "Crear Cliente";
+        this.isModalOpen = true;
+    }
+
+    @Call
+    public void openEdit(Client_ row) {
+        this.form = new Client_();
+        this.form.setId(row.getId());
+        this.form.name = row.name;
+        this.form.email = row.email;
+        this.form.status = row.status;
+        this.isEditing = true;
+        this.modalTitle = "Editar Cliente: " + row.name;
+        this.isModalOpen = true;
+    }
+
+    @Call
+    public void closeModal() { this.isModalOpen = false; }
+
+    @Call
+    public void save(Client_ form) {
+        service.save(form);
+        this.clients = service.findAll();
+        this.isModalOpen = false;
+    }
+
+    @Call
+    public void delete(Client_ row) {
+        service.delete(row.id);
+        this.clients = service.findAll();
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div style="padding: 20px;">
+                <h1>Gestión de Clientes</h1>
+                <div style="margin-bottom: 15px;">
+                    <JButton label="Nuevo Cliente" type="primary" onClick="openCreate()" />
+                </div>
+
+                <JTable :columns="headers" :data="clients" expose="row">
+                    <td>{{row.name}}</td>
+                    <td>{{row.email}}</td>
+                    <td><span class="badge {{row.status}}">{{row.status}}</span></td>
+                    <td>
+                        <button @click="openEdit(row)">✏️</button>
+                        <button @click="delete(row)" style="color:red">🗑️</button>
+                    </td>
+                </JTable>
+
+                <JModal :title="modalTitle" :visible="isModalOpen" onClose="closeModal()">
+                    <JForm onSubmit="save(form)">
+                        <input type="hidden" name="form.id" value="{{form.id}}">
+                        <JInput label="Nombre Completo" :field="form.name" required="true" />
+                        <JInput label="Correo Electrónico" type="email" :field="form.email" required="true" />
+                        <JSelect label="Estado" :field="form.status" :options="statusOptions"
+                                 required="true" placeholder="Selecciona una opcion" />
+                    </JForm>
+                </JModal>
+            </div>
+            """;
+    }
+}
+```
+
+</Step>
+
+</Steps>
+
+Key patterns demonstrated:
+
+- `@Autowired` with `transient` — Spring services injected into pages must be `transient` so they are excluded from serialization when state is persisted to Redis.
+- `onInit()` — called once per session the first time the page is rendered, not on every request.
+- `expose="row"` on `<JTable>` — exposes the loop variable `row` to child slot elements.
+- `:field="form.name"` (colon-prefixed) — binds a property by reference rather than as a literal string.

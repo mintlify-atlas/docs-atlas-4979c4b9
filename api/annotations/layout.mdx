@@ -1,0 +1,96 @@
+---
+title: "@Layout"
+description: "Wraps a routed page component inside a shared layout component, injecting the page content into the layout's <slot /> placeholder."
+---
+
+`@Layout` declares that a page component should be rendered inside a layout shell. The layout component provides the outer HTML structure — `<html>`, `<head>`, navigation, footer, and global scripts. The page component's rendered output is injected wherever the layout places a `<slot />`.
+
+The annotation is `@Inherited`, so a base page class can declare the layout once and all subclasses inherit it automatically.
+
+## Target
+
+`TYPE`
+
+## Attributes
+
+<ParamField path="value" type="Class<? extends HtmlComponent>" required>
+  The class of the layout component to wrap this page in. Must extend `HtmlComponent`.
+</ParamField>
+
+## Usage
+
+### Defining a layout
+
+A layout component is a plain `HtmlComponent` whose template contains a `<slot />` element marking where child page content is injected.
+
+```java MainLayout.java
+public class MainLayout extends HtmlComponent {
+
+    @Override
+    protected String template() {
+        return """
+            <!DOCTYPE html>
+            <html lang="en">
+            <head>
+                <meta charset="UTF-8">
+                <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>JReactive App</title>
+            </head>
+            <body>
+                <nav class="container-fluid">
+                    <ul>
+                        <li><strong>JReactive</strong></li>
+                    </ul>
+                    <ul>
+                        <li><a href="/" data-router>Home</a></li>
+                        <li><a href="/users/10" data-router>Profile</a></li>
+                    </ul>
+                </nav>
+
+                <main id="app">
+                    <slot />
+                </main>
+
+                <footer class="container">
+                    <small>Built with Java</small>
+                </footer>
+
+                <script src="/js/jreactive-runtime.js"></script>
+            </body>
+            </html>
+        """;
+    }
+}
+```
+
+### Applying the layout to a page
+
+```java AppPage.java
+import com.ciro.jreactive.HtmlComponent;
+import com.ciro.jreactive.router.Layout;
+
+@Layout(MainLayout.class)
+public abstract class AppPage extends HtmlComponent {
+    // All subclasses inherit @Layout(MainLayout.class)
+}
+```
+
+Any concrete page that extends `AppPage` is automatically wrapped in `MainLayout`:
+
+```java SignupPage.java
+@Route(path = "/signup")
+@StatefulRam
+@Client
+public class SignupPage extends AppPage {
+    // Inherits @Layout(MainLayout.class) from AppPage
+    // ...
+}
+```
+
+## Notes
+
+- The layout's `<slot />` element is replaced at render time with the full output of the page component's `template()` method.
+- `@Layout` is `@Inherited` — annotating a base class applies the layout to all subclasses unless a subclass overrides it with its own `@Layout` annotation.
+- Layout components are not routable themselves. Do not annotate a layout class with `@Route`.
+- Layouts can contain their own `@Bind` and `@State` fields for dynamic elements such as a logged-in user's display name in the navigation bar.
+- Only one level of layout nesting is supported. Nested layouts (a layout wrapping another layout) are not currently supported.

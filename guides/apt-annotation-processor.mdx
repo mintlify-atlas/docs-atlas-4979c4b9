@@ -1,0 +1,243 @@
+---
+title: APT Annotation Processor
+description: How jreactive-apt generates ComponentAccessor classes, scoped CSS, and client-side JS renderers at compile time.
+---
+
+`jreactive-apt` is a Java annotation processor that runs during `mvn compile`. It inspects every class that extends `HtmlComponent` and generates several artifacts at build time, eliminating reflection and template parsing overhead at runtime.
+
+## What the processor generates
+
+For each `HtmlComponent` subclass discovered on the source path, the processor generates:
+
+<CardGroup cols={2}>
+  <Card title="ComponentAccessor Java class" icon="code">
+    A `ClassName__Accessor` class with zero-reflection `read()`, `write()`, and `call()` methods. Registered in `AccessorRegistry` via a static initializer.
+  </Card>
+  <Card title="Pre-compiled AST" icon="tree">
+    The component's template is parsed at compile time into a `List<JrxNode>` that is inlined directly into the `getAst()` method of the accessor. No runtime parsing needed.
+  </Card>
+  <Card title="Scoped CSS" icon="paintbrush">
+    If a `.css` file exists alongside the `.java` file, it is scoped to the component and inlined into `getScopedCss()`. Lookup is O(1) via `AccessorRegistry`.
+  </Card>
+  <Card title="Client-side JS renderer" icon="browser">
+    For `@Client` components, a `.jrx.js` file is generated under `static/js/jrx/`. It registers a compiled template renderer on `window.JRX_RENDERERS` for client-side delta updates.
+  </Card>
+</CardGroup>
+
+## Adding the processor to Maven
+
+Declare `jreactive-apt` in `annotationProcessorPaths`. It must **not** be listed as a regular `<dependency>` because it is only needed at compile time and should not be included in the application classpath.
+
+```xml pom.xml
+<plugin>
+    <groupId>org.apache.maven.plugins</groupId>
+    <artifactId>maven-compiler-plugin</artifactId>
+    <version>3.11.0</version>
+    <configuration>
+        <source>21</source>
+        <target>21</target>
+        <annotationProcessorPaths>
+            <path>
+                <groupId>com.ciro</groupId>
+                <artifactId>jreactive-apt</artifactId>
+                <version>0.0.1-SNAPSHOT</version>
+            </path>
+        </annotationProcessorPaths>
+        <!-- Required: compiler needs access to internal javac APIs for AST inspection -->
+        <fork>true</fork>
+        <compilerArgs>
+            <arg>--add-exports</arg>
+            <arg>jdk.compiler/com.sun.source.util=ALL-UNNAMED</arg>
+            <arg>--add-exports</arg>
+            <arg>jdk.compiler/com.sun.source.tree=ALL-UNNAMED</arg>
+            <!-- Required: preserves method parameter names for @Call argument mapping -->
+            <arg>-parameters</arg>
+        </compilerArgs>
+    </configuration>
+</plugin>
+```
+
+<Warning>
+The `-parameters` compiler flag is mandatory. Without it, JReactive cannot map the JSON payload from a `@call` event to the correct method parameter names at runtime.
+</Warning>
+
+## How TemplateProcessor works
+
+`TemplateProcessor` is the entry point. It is registered as a standard `javax.annotation.processing.Processor` via Google `@AutoService`, so javac discovers and invokes it automatically.
+
+### Discovery
+
+The processor scans every root element compiled in the current round. A class is recognized as a JReactive component if:
+- It overrides a `template()` method with no parameters, or
+- Its superclass hierarchy contains `HtmlComponent` or `ViewLeaf`.
+
+### Template extraction
+
+The processor reads the template string in two ways, in priority order:
+
+1. **External HTML file** — looks for a `ClassName.html` file next to the `.java` source file.
+2. **Inline method** — uses the `com.sun.source` API (`Trees`) to extract the literal string returned by `template()`.
+
+### Validation
+
+Before generating any output, the processor validates that every `{{variable}}` reference in the template corresponds to a field annotated `@State` or `@Bind`, and that every `@event="method()"` binding corresponds to a method annotated `@Call`:
+
+```java TemplateProcessor.java
+Matcher mVar = Pattern.compile("\\{\\{\\s*(?!#|/)(?!else\\b)([\\w.-]+)\\s*}}").matcher(html);
+while (mVar.find()) {
+    String rootVar = mVar.group(1).split("\\.")[0];
+    if (!validVariables.contains(rootVar)) {
+        messager.printMessage(Diagnostic.Kind.ERROR,
+            "❌ [JReactive] La variable '" + rootVar + "' no existe en " + fileName +
+            ". Declárala con @State o expose.", tplMethod);
+    }
+}
+```
+
+If validation fails, the processor emits a `Diagnostic.Kind.ERROR` that surfaces as a normal Java compile error. The build stops and no accessor is generated for the invalid component.
+
+### What gets generated
+
+For a component class `com.example.MyPage`, the processor generates:
+
+| Artifact | Location | Contents |
+|---|---|---|
+| `MyPage__Accessor.java` | Same package as `MyPage` | `read()`, `write()`, `call()`, `getAst()`, `getScopedCss()` |
+| `MyPage.html` | `static/jrx/templates/com_example_MyPage.html` | Processed template HTML |
+| `com_example_MyPage.jrx.js` | `static/js/jrx/` | Client-side renderer (only for `@Client` components) |
+
+## ComponentAccessor: zero-reflection field access
+
+The generated `__Accessor` class contains explicit `switch` statements for every `@State` and `@Bind` field. The JVM can inline these as a direct field access — no `Field.get()` overhead:
+
+```java MyPage__Accessor.java (generated)
+@Generated("JReactiveAPT")
+public class MyPage__Accessor implements ComponentAccessor<MyPage> {
+
+    static {
+        AccessorRegistry.register(MyPage.class, new MyPage__Accessor());
+    }
+
+    @Override
+    public Object read(MyPage t, String p) {
+        switch (p) {
+            case "count": return unwrap(t.count);
+            case "title": return unwrap(t.title);
+        }
+        return null;
+    }
+
+    @Override
+    public void write(MyPage t, String p, Object v) {
+        switch (p) {
+            case "count": t.count = ((Number)v).intValue(); return;
+            case "title": t.title = (String)v; return;
+        }
+    }
+
+    @Override
+    public Object call(MyPage t, String m, Object... args) {
+        switch (m) {
+            case "increment":
+                t.increment();
+                return null;
+        }
+        throw new IllegalArgumentException("Method not found: " + m);
+    }
+}
+```
+
+All accessors are registered in a static `AccessorRegistry` map at class-load time, giving O(1) lookup by component class.
+
+## CssScoper: compile-time CSS isolation
+
+`CssScoper` uses the `ph-css` library to parse a component's `.css` file into an AST, prefix every selector with a unique scope class (`jrx-sc-<ClassName>`), and emit the result as a minified string embedded in `getScopedCss()`.
+
+```java CssScoper.java
+public static String scope(String css, String scopeId) {
+    CascadingStyleSheet aCSS = CSSReader.readFromString(css, ECSSVersion.CSS30);
+    scopeRules(aCSS.getAllRules(), scopeId);
+
+    CSSWriterSettings settings = new CSSWriterSettings(ECSSVersion.CSS30);
+    settings.setOptimizedOutput(true); // minify
+    return new CSSWriter(settings).getCSSAsString(aCSS);
+}
+```
+
+### Selector transformations
+
+| Input | Output | Rule |
+|---|---|---|
+| `button { ... }` | `.jrx-sc-MyPage button { ... }` | Descendant scope |
+| `:host { ... }` | `.jrx-sc-MyPage { ... }` | Root element reference |
+| `@media screen { ... }` | Recursively scoped | Media query contents |
+| `@keyframes { ... }` | Unchanged | Global (animations are global by nature) |
+
+### Example
+
+Create a `MyPage.css` file next to `MyPage.java`:
+
+```css MyPage.css
+:host {
+    padding: 20px;
+    background: #fff;
+}
+
+h1 {
+    font-size: 2rem;
+    color: #333;
+}
+
+.card {
+    border: 1px solid #eee;
+    border-radius: 8px;
+}
+```
+
+At compile time this becomes (minified and embedded in the accessor):
+
+```css
+.jrx-sc-MyPage{padding:20px;background:#fff}
+.jrx-sc-MyPage h1{font-size:2rem;color:#333}
+.jrx-sc-MyPage .card{border:1px solid #eee;border-radius:8px}
+```
+
+## Client-side JS renderer
+
+For any component annotated `@Client`, the processor also emits a JavaScript file that registers a pre-compiled template renderer:
+
+```js com_example_MyPage.jrx.js (generated)
+if(!window.JRX_RENDERERS) window.JRX_RENDERERS = {};
+window.JRX_RENDERERS['com_example_MyPage'] = {
+  compiled: true,
+  getTemplate: function() {
+    return `<div>...</div>`;
+  }
+};
+```
+
+The JReactive runtime uses this renderer to apply state deltas on the client side without waiting for a full server-rendered HTML response, which is what enables the `@Client` / optimistic UI patterns.
+
+## The `build-helper-maven-plugin`
+
+Generated Java sources land in `target/generated-sources/annotations`. Add the `build-helper-maven-plugin` to include that directory on the compile source path so IDEs and the compiler pick them up:
+
+```xml pom.xml
+<plugin>
+    <groupId>org.codehaus.mojo</groupId>
+    <artifactId>build-helper-maven-plugin</artifactId>
+    <version>3.4.0</version>
+    <executions>
+        <execution>
+            <id>add-source</id>
+            <phase>generate-sources</phase>
+            <goals><goal>add-source</goal></goals>
+            <configuration>
+                <sources>
+                    <source>${project.build.directory}/generated-sources/annotations</source>
+                </sources>
+            </configuration>
+        </execution>
+    </executions>
+</plugin>
+```

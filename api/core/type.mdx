@@ -1,0 +1,145 @@
+---
+title: Type<T>
+description: A concise record-based wrapper around ReactiveVar<T>. Provides factory methods and direct get/set access for use with @Bind fields.
+---
+
+`Type<T>` is a thin `record` that wraps a `ReactiveVar<T>`. It exists to reduce boilerplate when declaring reactive fields on a component — instead of writing `new ReactiveVar<>(value)` you write `$(value)`, and you access the value with `.get()` / `.set()` directly on the field without unwrapping.
+
+## Class signature
+
+```java Type.java
+public record Type<T>(ReactiveVar<T> rx) {
+    public T get();
+    public void set(T value);
+    public static <U> Type<U> of(U initial);
+    public static <U> Type<U> $(U initial);
+}
+```
+
+---
+
+## Factory methods
+
+### `$(U initial)` / `Type.of(U initial)`
+
+Creates a new `Type<U>` containing a fresh `ReactiveVar<U>` initialized to `initial`. Both methods are equivalent; `$` is provided as a concise import-static alias.
+
+<ParamField path="initial" type="U" required>
+  The initial value for the reactive container. May be `null`.
+</ParamField>
+
+<ResponseField name="return" type="Type<U>">
+  A new `Type` wrapping a `ReactiveVar` holding the given value.
+</ResponseField>
+
+```java
+import static com.ciro.jreactive.Type.$;
+
+Type<String> greeting = $("Hello");
+Type<Integer> count   = $(0);
+```
+
+---
+
+## Methods
+
+### `get()`
+
+Returns the current value from the underlying `ReactiveVar`.
+
+<ResponseField name="return" type="T">
+  The current value.
+</ResponseField>
+
+```java
+String current = greeting.get(); // "Hello"
+```
+
+---
+
+### `set(T value)`
+
+Updates the underlying `ReactiveVar` and fires all registered listeners (subject to the active guard).
+
+<ParamField path="value" type="T" required>
+  The new value to store and broadcast.
+</ParamField>
+
+```java
+greeting.set("Hola");
+```
+
+---
+
+### `rx()`
+
+Returns the underlying `ReactiveVar<T>` directly. Use this when you need to call `onChange()`, `clearListeners()`, or pass the raw reactive container to the framework.
+
+<ResponseField name="return" type="ReactiveVar<T>">
+  The underlying reactive container.
+</ResponseField>
+
+```java
+Runnable unsub = greeting.rx().onChange(val -> System.out.println("Changed: " + val));
+```
+
+---
+
+## Difference from plain `ReactiveVar<T>`
+
+| | `ReactiveVar<T>` | `Type<T>` |
+|---|---|---|
+| Declaration | `@Bind ReactiveVar<String> name = new ReactiveVar<>("x")` | `@Bind Type<String> name = $("x")` |
+| Read | `name.get()` | `name.get()` |
+| Write | `name.set(v)` | `name.set(v)` |
+| Access inner var | — | `name.rx()` |
+| Import needed | none | `import static com.ciro.jreactive.Type.$` |
+
+Both are fully equivalent from the framework's perspective. The binding system in `HtmlComponent.buildBindings()` handles both:
+
+```java HtmlComponent.java
+rx = (raw instanceof ReactiveVar<?> r) ? r :
+     (raw instanceof Type<?> v)        ? v.rx() :
+     new ReactiveVar<>(raw);
+```
+
+---
+
+## Usage with `@Bind`
+
+```java ClockLeaf.java
+import static com.ciro.jreactive.Type.$;
+
+public class ClockLeaf extends HtmlComponent {
+
+    @Bind public Type<String> greet = $("Hello");
+    @Bind public Type<String> clock = $("--:--:--");
+
+    @Override
+    public void onInit() {
+        clock.set(LocalTime.now().withNano(0).toString());
+    }
+
+    @Override
+    protected void onMount() {
+        timer = new java.util.Timer(true);
+        timer.scheduleAtFixedRate(new TimerTask() {
+            @Override public void run() {
+                clock.set(java.time.LocalTime.now().withNano(0).toString());
+            }
+        }, 1000, 1000);
+    }
+
+    @Override
+    public String template() {
+        return """
+               <div class="clock">
+                 <h1>{{greet}}, the time is {{clock}}!</h1>
+                 <input name="greet" placeholder="Type greeting">
+               </div>
+               """;
+    }
+}
+```
+
+<Tip>Prefer `Type<T>` over raw `ReactiveVar<T>` for component fields. The static `$()` import keeps field declarations compact and the record type makes the reactive intent explicit at the declaration site.</Tip>

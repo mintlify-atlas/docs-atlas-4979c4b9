@@ -1,0 +1,204 @@
+---
+title: Redis Scaling
+description: Configure the Redis state store for horizontal scaling across multiple JReactive instances.
+---
+
+By default, JReactive stores per-session component state in a local Caffeine cache (`CaffeineStateStore`). This works for single-node deployments, but when you scale to multiple instances, each node has its own isolated cache. A user whose WebSocket reconnects to a different instance will find their state gone.
+
+`jreactive-store-redis` solves this by providing a shared, persistent state store backed by Redis.
+
+## Maven dependency
+
+```xml pom.xml
+<dependency>
+    <groupId>com.ciro</groupId>
+    <artifactId>jreactive-store-redis</artifactId>
+    <version>0.0.1-SNAPSHOT</version>
+</dependency>
+```
+
+This module depends on `jedis` for Redis connectivity and `fst` for binary serialization. Both are pulled in transitively.
+
+## Configuring the store
+
+`RedisStoreConfig` is a Spring `@Configuration` class that reads properties from `application.yml` and registers the appropriate `StateStore` bean as `@Primary`.
+
+```yaml application.yml
+jreactive:
+  store:
+    type: redis          # redis | hybrid
+    serialization: json  # json | fst
+    consistency: strong  # strong | eventual (hybrid mode only)
+  redis:
+    host: localhost
+    port: 6379
+```
+
+### Store types
+
+<Tabs>
+  <Tab title="redis">
+  Uses `RedisStateStore` directly. Every read and write goes to Redis. Simple and correct; suitable when latency to Redis is acceptably low.
+
+  ```yaml
+  jreactive:
+    store:
+      type: redis
+  ```
+  </Tab>
+  <Tab title="hybrid">
+  Uses `HybridStateStore`: an L1 Caffeine cache in front of an L2 Redis store. Reads are served from RAM if the component is cached; writes propagate to Redis according to the consistency mode. This is the recommended production configuration.
+
+  ```yaml
+  jreactive:
+    store:
+      type: hybrid
+      consistency: strong
+  ```
+  </Tab>
+</Tabs>
+
+## Serializers
+
+`RedisStoreConfig` selects a `StateSerializer` based on the `jreactive.store.serialization` property.
+
+<Tabs>
+  <Tab title="json (default)">
+  `JacksonStateSerializer` uses Jackson with polymorphic type information embedded as a `@class` property. This allows Redis to store any `HtmlComponent` subclass and correctly reconstruct it on deserialization.
+
+  ```java JacksonStateSerializer.java
+  this.mapper.activateDefaultTyping(
+      ptv,
+      ObjectMapper.DefaultTyping.NON_FINAL,
+      JsonTypeInfo.As.PROPERTY  // adds "@class": "com.example.MyPage"
+  );
+  ```
+
+  **Pros:** Human-readable in Redis, tolerant of unknown fields (`FAIL_ON_UNKNOWN_PROPERTIES=false`), survives rolling deployments where class shape may differ between instances.
+
+  **Cons:** Larger payload size than binary.
+  </Tab>
+  <Tab title="fst">
+  `FstStateSerializer` uses the [FST](https://github.com/RuedigerMoeller/fast-serialization) binary serialization library.
+
+  ```java FstStateSerializer.java
+  private final FSTConfiguration conf = FSTConfiguration.createDefaultConfiguration();
+
+  public byte[] serialize(Object obj) {
+      return conf.asByteArray(obj);
+  }
+  ```
+
+  **Pros:** Significantly faster than JSON; minimal payload size.
+
+  **Cons:** Binary format is fragile — renaming or removing a field in your component class will break deserialization of previously stored state. Do not use FST if you perform rolling deployments.
+  </Tab>
+</Tabs>
+
+## HybridStateStore: L1 + L2 architecture
+
+`HybridStateStore` wraps both a `CaffeineStateStore` (L1) and a `RedisStateStore` (L2):
+
+```java HybridStateStore.java
+@Override
+public HtmlComponent get(String sid, String path) {
+    // 1. Try RAM first
+    HtmlComponent comp = l1.get(sid, path);
+    if (comp != null) return comp;
+
+    // 2. Fallback to Redis (e.g. after a node restart)
+    comp = l2.get(sid, path);
+    if (comp != null) {
+        l1.put(sid, path, comp); // Read-repair: warm the local cache
+    }
+    return comp;
+}
+```
+
+On writes, the hybrid store checks whether the component is annotated `@StatefulRam`. If it is, only the L1 cache is updated and Redis is skipped entirely — saving serialization overhead and network I/O for components that are intentionally ephemeral (e.g. a signup form).
+
+```java HybridStateStore.java
+@Override
+public void put(String sid, String path, HtmlComponent comp) {
+    l1.put(sid, path, comp); // Always write to RAM
+
+    if (comp.getClass().isAnnotationPresent(StatefulRam.class)) {
+        return; // Skip Redis for RAM-only components
+    }
+
+    if (strongConsistency) {
+        l2.put(sid, path, comp);
+    } else {
+        CompletableFuture.runAsync(() -> l2.put(sid, path, comp));
+    }
+}
+```
+
+### Consistency modes
+
+| Mode | Behaviour | Trade-off |
+|---|---|---|
+| `strong` | Waits for Redis write to complete before confirming the call | Safer; small latency increase per `@Call` |
+| `eventual` | Writes to RAM immediately; persists to Redis asynchronously | Lower latency; risk of state loss if the node crashes before the async write completes |
+
+## CAS (Compare-And-Swap) for concurrent updates
+
+When two requests attempt to update the same component concurrently, JReactive uses optimistic locking. Each component carries a version number. `RedisStateStore.replace()` runs a Lua script atomically on the Redis server to verify the expected version before overwriting:
+
+```lua CAS Lua script
+local key = KEYS[1]
+local expectedVer = tonumber(ARGV[1])
+local newData = ARGV[2]
+
+-- Handle new key creation
+if redis.call('exists', key) == 0 then
+    if expectedVer == 0 then
+        redis.call('hset', key, 'data', newData, 'v', 1)
+        redis.call('expire', key, 1800)
+        return 1
+    else
+        return 0
+    end
+end
+
+-- Check current version
+local currentVer = tonumber(redis.call('hget', key, 'v') or '0')
+if currentVer == expectedVer then
+    redis.call('hset', key, 'data', newData, 'v', currentVer + 1)
+    redis.call('expire', key, 1800)
+    return 1
+else
+    return 0  -- Conflict: another node updated first
+end
+```
+
+Because the script runs atomically on the Redis server, no distributed lock is needed. If the script returns `0`, JReactive retries with a refreshed state snapshot.
+
+## TTL
+
+All keys are stored with a TTL of **1800 seconds (30 minutes)** from the last write. Both the page state key (`jrx:page:<sid>:<path>`) and the session index key (`jrx:idx:<sid>`) are refreshed on every write.
+
+Keys are namespaced as:
+- `jrx:page:<sessionId>:<path>` — the serialized component state
+- `jrx:idx:<sessionId>` — a Redis Set tracking all page keys for a session (used for session cleanup)
+
+## `@Stateful` vs `@StatefulRam`
+
+| Annotation | L1 (Caffeine) | L2 (Redis) | Use when |
+|---|---|---|---|
+| `@Stateful` (default) | Yes | Yes | State must survive node restarts and horizontal scaling |
+| `@StatefulRam` | Yes | No | State is session-local and ephemeral; serialization cost is undesirable |
+
+```java
+@Route(path = "/signup")
+@StatefulRam  // form data doesn't need to survive a node restart
+public class SignupPage extends HtmlComponent { ... }
+
+@Route(path = "/dashboard")
+// No annotation = @Stateful by default: persisted to Redis
+public class DashboardPage extends HtmlComponent { ... }
+```
+
+<Tip>
+Use `@StatefulRam` for form pages, wizards, or any page where losing state on a node restart is acceptable. Reserve full Redis persistence for pages that own business-critical state.
+</Tip>

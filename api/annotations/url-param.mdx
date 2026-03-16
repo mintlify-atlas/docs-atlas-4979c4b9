@@ -1,0 +1,106 @@
+---
+title: "@UrlParam"
+description: "Injects a URL query string parameter into a component field. Recommended for use alongside @State or @Bind."
+---
+
+`@UrlParam` binds a query string parameter (e.g., `?page=2&search=java`) to a component field. The value is extracted from the URL when the component is initialized and converted to the field's declared type. It is recommended to pair `@UrlParam` with `@State` or `@Bind` so that the value participates in the reactivity system.
+
+## Target
+
+`FIELD`
+
+## Attributes
+
+<ParamField path="value" type="string"  default="(empty)">
+  The name of the query string parameter to bind. If empty, the Java field name is used as the parameter name.
+</ParamField>
+
+## Type conversion
+
+JReactive converts the raw query string value to the declared field type using the same rules as `@Param`:
+
+| Field type | Conversion |
+|------------|------------|
+| `String` | No conversion — value used as-is |
+| `int` / `Integer` | `Integer.parseInt()` |
+| `long` / `Long` | `Long.parseLong()` |
+| `boolean` / `Boolean` | `Boolean.parseBoolean()` |
+| `ReactiveVar<T>` | Converted to `T`, then wrapped |
+| `Type<T>` | Converted to `T`, then wrapped with `$()` |
+
+## Usage
+
+### Implicit field name
+
+When `value` is omitted, the field name is used as the query parameter name. A URL like `/search?query=java&page=2` would populate the following fields:
+
+```java SearchPage.java
+import com.ciro.jreactive.router.Route;
+import com.ciro.jreactive.router.UrlParam;
+
+@Route(path = "/search")
+@StatefulRam
+public class SearchPage extends HtmlComponent {
+
+    @UrlParam
+    @State String query = "";
+
+    @UrlParam
+    @State int page = 1;
+
+    @Call
+    public void search() {
+        // query and page are already populated from the URL
+        List<Result> results = searchService.find(query, page);
+        // ...
+    }
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <input name="query" value="{{query}}" placeholder="Search...">
+            <p>Page: {{page}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+### Explicit parameter name
+
+Use an explicit value when the query parameter name differs from the Java field name, or when the parameter name is not a valid Java identifier:
+
+```java ProductListPage.java
+import com.ciro.jreactive.router.Route;
+import com.ciro.jreactive.router.UrlParam;
+
+@Route(path = "/products")
+@StatefulRam
+public class ProductListPage extends HtmlComponent {
+
+    @UrlParam("category_id")
+    @State int categoryId = 0;
+
+    @UrlParam("sort-by")
+    @State String sortBy = "name";
+
+    @Override
+    protected String template() {
+        return """
+          <div>
+            <p>Category: {{categoryId}}</p>
+            <p>Sort: {{sortBy}}</p>
+          </div>
+        """;
+    }
+}
+```
+
+## Notes
+
+- `@UrlParam` fields are populated before `onInit()` runs, so query parameters are available for data-loading logic in `onInit()`.
+- If the query parameter is missing from the URL, the field retains its default value (the value assigned at field declaration).
+- If the parameter is present but cannot be converted to the declared type, JReactive throws a `ParamConversionException`. Use `String` fields and convert manually if the value may be user-supplied and unpredictable.
+- Pairing with `@State` (as in the examples above) allows the value to be updated reactively if the URL changes during SPA navigation.
+- The `value` attribute follows the same empty-means-field-name convention as `@Bind`.

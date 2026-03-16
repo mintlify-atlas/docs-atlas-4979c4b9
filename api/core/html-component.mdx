@@ -1,0 +1,269 @@
+---
+title: HtmlComponent
+description: The base class for all JReactive components. Extend this class to build reactive, server-rendered UI components with WebSocket state synchronization.
+---
+
+`HtmlComponent` is the foundation of every JReactive UI component. It extends `ViewLeaf` (which implements `ViewNode`) and provides the full lifecycle, rendering pipeline, state management, and child component tree.
+
+## Inheritance hierarchy
+
+```
+ViewNode          (interface — String render())
+  └── ViewLeaf   (abstract — String getId(), Map<String, ReactiveVar<?>> bindings())
+        └── HtmlComponent (abstract — template, lifecycle, children, state)
+              └── YourComponent
+```
+
+## Minimal example
+
+```java CounterLeaf.java
+@Client
+@StatefulRam
+public class CounterLeaf extends HtmlComponent {
+
+    @State
+    public int count = 0;
+
+    @Call
+    public void increment() {
+        count++;
+    }
+
+    @Override
+    protected String template() {
+        return """
+            <div>
+                <p>Count: <strong>{{count}}</strong></p>
+                <button @click="increment()">+1</button>
+            </div>
+        """;
+    }
+}
+```
+
+## ComponentState enum
+
+Every component tracks its lifecycle state with the `ComponentState` enum.
+
+| Value | Meaning |
+|---|---|
+| `MOUNTED` | Component is active; reactive listeners fire on state changes. |
+| `UNMOUNTED` | Component is inactive; listeners are suppressed and resources should be released. |
+
+Access the current state at runtime via `_state()`:
+
+```java
+ComponentState state = component._state(); // MOUNTED or UNMOUNTED
+```
+
+---
+
+## Template
+
+### `template()`
+
+Returns the HTML template string for this component. This is the only method you **must** override (or provide a matching `.html` resource file).
+
+<ParamField path="returns" type="String">
+  An HTML string with `{{binding}}` expressions, `@click` event attributes, and `<jrx:ComponentName>` child tags.
+</ParamField>
+
+If you do not override `template()`, JReactive looks for a resource file named `ClassName.html` on the classpath next to the class. If neither exists the component throws `IllegalStateException` at first render.
+
+```java ClockLeaf.java
+@Override
+public String template() {
+    return """
+           <div class="clock">
+             <h1>{{greet}}, the time is {{clock}}!</h1>
+             <input name="greet" placeholder="Type greeting">
+           </div>
+           """;
+}
+```
+
+---
+
+## Lifecycle hooks
+
+Override these `protected` methods to react to component lifecycle events. You do not need to call `super`.
+
+### `onInit()`
+
+Called **once**, the first time the component is created for a session. Use this for one-time initialization such as setting computed initial values.
+
+<Note>This fires before the first render and before `onMount()`. It is called only once per component instance across its entire lifetime.</Note>
+
+```java ClockLeaf.java
+@Override
+public void onInit() {
+    // Set the initial clock value immediately so the first render is accurate
+    clock.set(LocalTime.now().withNano(0).toString());
+}
+```
+
+---
+
+### `onMount()`
+
+Called each time the component transitions from `UNMOUNTED` → `MOUNTED`. Use this to start background tasks, timers, or subscribe to external events.
+
+```java ClockLeaf.java
+@Override
+protected void onMount() {
+    timer = new java.util.Timer(true);
+    timer.scheduleAtFixedRate(new TimerTask() {
+        @Override public void run() {
+            clock.set(java.time.LocalTime.now().withNano(0).toString());
+        }
+    }, 1000, 1000);
+}
+```
+
+---
+
+### `onUnmount()`
+
+Called each time the component transitions from `MOUNTED` → `UNMOUNTED`. Use this to cancel timers, close connections, or release any resources started in `onMount()`.
+
+<Warning>Always cancel timers and release external resources in `onUnmount()`. Failing to do so causes memory leaks because the component may be evicted from the store while still holding live threads.</Warning>
+
+```java ClockLeaf.java
+@Override
+protected void onUnmount() {
+    if (timer != null) {
+        timer.cancel();
+        timer = null;
+    }
+}
+```
+
+---
+
+## Rendering
+
+### `render()`
+
+Produces the full HTML output for the component tree, including bound expressions resolved against the current state. The result is **cached** after the first call.
+
+<ResponseField name="return" type="String">
+  Fully rendered HTML string with all `{{binding}}` expressions evaluated and child components inlined.
+</ResponseField>
+
+<Note>You almost never call `render()` directly. The JReactive runtime calls it as part of the initial page delivery and the WebSocket diffing cycle.</Note>
+
+---
+
+### `_clearCache()`
+
+Invalidates the render cache for this component and all of its descendants. The next call to `render()` re-renders the full subtree from `template()`.
+
+```java
+component._clearCache();
+```
+
+<Note>Cache invalidation is handled automatically by the framework when reactive state changes. Call `_clearCache()` manually only in advanced scenarios where you bypass the normal reactive pipeline.</Note>
+
+---
+
+## State management
+
+### `updateState(String fieldName)`
+
+Forces a state push to the browser for a field that was mutated directly (bypassing `ReactiveVar.set()`). Only applies to fields annotated with `@State`.
+
+<ParamField path="fieldName" type="String" required>
+  The Java field name (not the binding key) of the `@State` field to push.
+</ParamField>
+
+```java
+@State
+public List<String> items = new ArrayList<>();
+
+@Call
+public void addItem(String item) {
+    items.add(item);          // Direct mutation — reactive var does not know
+    updateState("items");    // Manually signal the change
+}
+```
+
+<Info>When a field is annotated with both `@State` and uses a `SmartList` / `SmartMap` / `SmartSet`, mutations are detected automatically. `updateState()` is only needed for plain collections or POJOs mutated in place.</Info>
+
+---
+
+## Slots
+
+### `slot()`
+
+Returns the HTML content injected into the default slot of this component by its parent.
+
+<ResponseField name="return" type="String">
+  The slot HTML string, or an empty string if no content was provided.
+</ResponseField>
+
+---
+
+### `slot(String name)`
+
+Returns the HTML content injected into a named slot.
+
+<ParamField path="name" type="String" required>
+  The slot name as declared in the parent's template with `slot="name"`.
+</ParamField>
+
+<ResponseField name="return" type="String">
+  The named slot HTML string, or an empty string if not provided.
+</ResponseField>
+
+```java
+@Override
+protected String template() {
+    return "<div class='card'>" + slot("header") + "<div class='body'>" + slot() + "</div></div>";
+}
+```
+
+---
+
+## Child components
+
+### `addChild(HtmlComponent child)`
+
+Adds a child component to this component's subtree. This method is thread-safe and idempotent — adding the same child instance twice has no effect.
+
+<ParamField path="child" type="HtmlComponent" required>
+  The component instance to add as a child.
+</ParamField>
+
+```java
+MyWidget widget = new MyWidget();
+parentComponent.addChild(widget);
+```
+
+<Note>In normal usage you do not call `addChild()` manually. The template engine registers children automatically when it processes `<jrx:ChildComponent>` tags in `template()`.</Note>
+
+---
+
+### `findChild(String ref, Class<T> type)`
+
+Finds a child component by its `ref` attribute and expected type. Searches the entire descendant tree recursively.
+
+<ParamField path="ref" type="String" required>
+  The `ref` attribute value assigned to the child in the parent's template (e.g., `ref="myCounter"`).
+</ParamField>
+
+<ParamField path="type" type="Class<T>" required>
+  The expected class of the child. Used for both type checking and the return type cast.
+</ParamField>
+
+<ResponseField name="return" type="T">
+  The matching child component cast to type `T`, or `null` if not found.
+</ResponseField>
+
+```java
+// In template: <jrx:CounterLeaf ref="counter" />
+CounterLeaf counter = findChild("counter", CounterLeaf.class);
+if (counter != null) {
+    counter.count = 10;
+    counter.updateState("count");
+}
+```

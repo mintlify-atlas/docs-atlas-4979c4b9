@@ -1,0 +1,195 @@
+---
+title: StateStore
+description: The storage interface for persisting HtmlComponent instances across WebSocket requests. JReactive ships two implementations — CaffeineStateStore (in-process) and RedisStateStore (distributed).
+---
+
+`StateStore` is the SPI that JReactive uses to load, save, and delete component trees keyed by `(sessionId, path)`. Implementing or swapping this interface is how you change where component state lives.
+
+## Interface
+
+```java StateStore.java
+public interface StateStore {
+    HtmlComponent get(String sessionId, String path);
+    void put(String sessionId, String path, HtmlComponent component);
+    boolean replace(String sessionId, String path, HtmlComponent component, long expectedVersion);
+    void remove(String sessionId, String path);
+    void removeSession(String sessionId);
+}
+```
+
+---
+
+## Methods
+
+### `get(String sessionId, String path)`
+
+Loads the component tree for a given session and URL path.
+
+<ParamField path="sessionId" type="String" required>
+  The WebSocket / HTTP session identifier.
+</ParamField>
+
+<ParamField path="path" type="String" required>
+  The URL path that identifies which page/component tree to load (e.g., `"/dashboard"`).
+</ParamField>
+
+<ResponseField name="return" type="HtmlComponent">
+  The stored component, or `null` if it does not exist or has expired.
+</ResponseField>
+
+---
+
+### `put(String sessionId, String path, HtmlComponent component)`
+
+Persists a component tree. Overwrites any existing entry for `(sessionId, path)` unconditionally.
+
+<ParamField path="sessionId" type="String" required>
+  The session identifier.
+</ParamField>
+
+<ParamField path="path" type="String" required>
+  The URL path key.
+</ParamField>
+
+<ParamField path="component" type="HtmlComponent" required>
+  The component tree root to store.
+</ParamField>
+
+<Warning>Prefer `replace()` over `put()` in multi-instance deployments. `put()` performs a blind write with no version check and will silently overwrite concurrent updates from other JVM nodes.</Warning>
+
+---
+
+### `replace(String sessionId, String path, HtmlComponent component, long expectedVersion)`
+
+Compare-and-swap (CAS) update. Only overwrites the stored component if its current version matches `expectedVersion`. This is the primary write method for `@Stateful` components in concurrent or multi-JVM environments.
+
+<ParamField path="sessionId" type="String" required>
+  The session identifier.
+</ParamField>
+
+<ParamField path="path" type="String" required>
+  The URL path key.
+</ParamField>
+
+<ParamField path="component" type="HtmlComponent" required>
+  The new component tree to store if the version check passes.
+</ParamField>
+
+<ParamField path="expectedVersion" type="long" required>
+  The version number that must match the stored component's current version. Pass `0` to indicate a creation (the key must not already exist).
+</ParamField>
+
+<ResponseField name="return" type="boolean">
+  `true` if the swap succeeded; `false` if the stored version did not match (concurrent update detected).
+</ResponseField>
+
+---
+
+### `remove(String sessionId, String path)`
+
+Deletes the component entry for a single `(sessionId, path)` combination.
+
+<ParamField path="sessionId" type="String" required>
+  The session identifier.
+</ParamField>
+
+<ParamField path="path" type="String" required>
+  The URL path key to delete.
+</ParamField>
+
+---
+
+### `removeSession(String sessionId)`
+
+Deletes all component entries associated with a session. Called when a WebSocket connection closes to free resources.
+
+<ParamField path="sessionId" type="String" required>
+  The session identifier whose entire component set should be deleted.
+</ParamField>
+
+---
+
+## Built-in implementations
+
+### CaffeineStateStore (default)
+
+An in-process store backed by a Caffeine cache. This is the default when no custom `StateStore` bean is registered.
+
+```java CaffeineStateStore.java
+public CaffeineStateStore() {
+    this.cache = Caffeine.newBuilder()
+            .expireAfterAccess(30, TimeUnit.MINUTES)
+            .maximumSize(10_000)
+            .removalListener((String key, HtmlComponent val, RemovalCause cause) -> {
+                // Automatic cleanup on expiry to prevent resource leaks
+                if (val != null) val._unmountRecursive();
+            })
+            .build();
+}
+```
+
+**Characteristics:**
+
+| Property | Value |
+|---|---|
+| TTL | 30 minutes after last access |
+| Max entries | 10,000 |
+| CAS implementation | Atomic `compute()` on the underlying `ConcurrentMap` |
+| Multi-node support | No — state is JVM-local |
+| Cleanup on eviction | Yes — calls `_unmountRecursive()` |
+
+---
+
+### RedisStateStore
+
+A distributed store backed by Redis via Jedis. Required for multi-instance deployments where sessions can be served by different JVM nodes.
+
+```java RedisStateStore.java
+public RedisStateStore(String host, int port, StateSerializer serializer) {
+    this.redisPool = new JedisPool(host, port);
+    this.serializer = serializer;
+}
+```
+
+**Characteristics:**
+
+| Property | Value |
+|---|---|
+| TTL | 30 minutes (refreshed on each access) |
+| CAS implementation | Lua script (atomic compare-and-swap in Redis) |
+| Multi-node support | Yes |
+| Serialization | Pluggable `StateSerializer` (JSON or FST) |
+| Key format | `jrx:page:{sessionId}:{path}` |
+
+The Redis CAS operation uses a Lua script to guarantee atomicity:
+
+```lua
+local currentVer = tonumber(redis.call('hget', key, 'v') or '0')
+if currentVer == expectedVer then
+    redis.call('hset', key, 'data', newData, 'v', currentVer + 1)
+    return 1
+else
+    return 0
+end
+```
+
+---
+
+## Registering a custom StateStore
+
+Declare a Spring `@Bean` of type `StateStore` and the JReactive auto-configuration will use it instead of the default.
+
+```java JReactiveConfig.java
+@Configuration
+public class JReactiveConfig {
+
+    @Bean
+    public StateStore stateStore() {
+        // Use Redis in production
+        StateSerializer serializer = new JsonStateSerializer();
+        return new RedisStateStore("redis-host", 6379, serializer);
+    }
+}
+```
+
+<Info>If no `StateStore` bean is present, JReactive auto-configures a `CaffeineStateStore` automatically. You only need this configuration when deploying to multiple JVM instances or when the default cache settings do not meet your requirements.</Info>
