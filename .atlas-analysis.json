@@ -1,0 +1,142 @@
+{
+  "projectType": "framework",
+  "projectName": "JReactive",
+  "projectDescription": "A Java framework for building reactive, component-based web UIs with server-side rendering and real-time WebSocket-powered state synchronization.",
+  "theme": "linden",
+  "primaryColor": "#1a6bbd",
+  "lightColor": "#e8f1fb",
+  "darkColor": "#0d3d6e",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Core Concepts",
+            "pages": [
+              "concepts/components",
+              "concepts/state-management",
+              "concepts/reactivity",
+              "concepts/routing",
+              "concepts/templates"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/spring-boot-integration",
+              "guides/standalone-server",
+              "guides/redis-scaling",
+              "guides/built-in-ui-components",
+              "guides/apt-annotation-processor",
+              "guides/optimistic-ui"
+            ]
+          },
+          {
+            "group": "Advanced",
+            "pages": [
+              "advanced/dom-modes",
+              "advanced/event-bus",
+              "advanced/state-stores",
+              "advanced/component-lifecycle"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Annotations",
+            "pages": [
+              "api/annotations/bind",
+              "api/annotations/state",
+              "api/annotations/call",
+              "api/annotations/route",
+              "api/annotations/stateful",
+              "api/annotations/stateful-ram",
+              "api/annotations/stateless",
+              "api/annotations/client",
+              "api/annotations/layout",
+              "api/annotations/dom-mode",
+              "api/annotations/param",
+              "api/annotations/url-param"
+            ]
+          },
+          {
+            "group": "Core Classes",
+            "pages": [
+              "api/core/html-component",
+              "api/core/reactive-var",
+              "api/core/event-bus",
+              "api/core/type"
+            ]
+          },
+          {
+            "group": "UI Components",
+            "pages": [
+              "api/ui/jbutton",
+              "api/ui/jinput",
+              "api/ui/jform",
+              "api/ui/jselect",
+              "api/ui/jcheckbox",
+              "api/ui/jtable",
+              "api/ui/jcard",
+              "api/ui/jmodal",
+              "api/ui/link"
+            ]
+          },
+          {
+            "group": "SPI & Extension",
+            "pages": [
+              "api/spi/state-store",
+              "api/spi/component-accessor",
+              "api/spi/jrx-session",
+              "api/spi/jrx-message-broker"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Reactive server-side components defined entirely in Java with no JavaScript required",
+    "WebSocket-based real-time state synchronization between server and browser",
+    "Component-scoped CSS and co-located JS resources via annotation processing (APT)",
+    "Multiple rendering modes: @Stateful (Redis), @StatefulRam (in-memory), @Stateless (crypto-signed), and @Client (CSR)",
+    "Built-in client-side router with @Route, @Layout, @Param and @UrlParam annotations",
+    "Bean Validation integration via @Call methods with @Valid parameters",
+    "Smart reactive collections (SmartList, SmartMap, SmartSet) for fine-grained delta updates",
+    "Spring Boot auto-configuration starter and lightweight standalone Undertow server",
+    "Redis-backed distributed state store for horizontal scaling",
+    "Handlebars-like template syntax with {{binding}}, {{#if}}, {{#each}} and slot support"
+  ],
+  "publicApiSurface": [
+    "HtmlComponent — base class for all components; override template(), onInit(), onMount(), onUnmount()",
+    "@Bind — exposes a field as a reactive binding to the template",
+    "@State — marks a field as server-managed reactive state",
+    "@Call — exposes a method as a callable action from the browser",
+    "@Route(path) — maps a component class to a URL path",
+    "@Layout(Class) — wraps a page component inside a layout component",
+    "@Stateful — serializes component state to Redis/persistent store",
+    "@StatefulRam — keeps component state in JVM memory only",
+    "@Stateless — encodes state cryptographically in the HTML (zero server memory)",
+    "@Client — enables client-side rendering (CSR) mode for a component",
+    "@DomMode — sets the DOM update strategy (CLIENT_MANAGED or SERVER_OWNED)",
+    "@Param / @UrlParam — injects path and query parameters into component fields",
+    "ReactiveVar<T> — observable value container with onChange listeners",
+    "EventBus — in-process pub/sub for cross-component communication",
+    "StateStore — SPI interface for pluggable state persistence (Caffeine, Redis)",
+    "JReactiveServer — standalone Undertow-based server builder",
+    "JReactiveAutoConfiguration — Spring Boot auto-configuration entry point",
+    "JButton, JInput, JForm, JSelect, JCheckBox, JTable, JCard, JModal, Link — built-in UI component library"
+  ]
+}
